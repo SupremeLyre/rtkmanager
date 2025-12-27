@@ -360,134 +360,183 @@ class _SerialDebugContentState extends State<SerialDebugContent>
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    super.build(context); // Required for AutomaticKeepAliveClientMixin
-    return Column(
-      children: [
-        // Upper part: Received Data
-        Expanded(
-          flex: 2,
-          child: Container(
-            margin: const EdgeInsets.all(8.0),
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.grey),
-              borderRadius: BorderRadius.circular(4.0),
-              color: Colors.black87,
-            ),
-            child: Stack(
-              children: [
-                ListView.builder(
-                  controller: _scrollController,
-                  itemCount: _receivedData.length,
-                  itemBuilder: (context, index) {
-                    return Text(
-                      _receivedData[index],
-                      style: const TextStyle(
-                        color: Colors.greenAccent,
-                        fontFamily: 'SourceCodePro',
-                      ),
-                    );
-                  },
+  Widget _buildLogArea() {
+    return Container(
+      margin: const EdgeInsets.all(8.0),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.grey),
+        borderRadius: BorderRadius.circular(4.0),
+        color: Colors.black87,
+      ),
+      child: Stack(
+        children: [
+          ListView.builder(
+            controller: _scrollController,
+            itemCount: _receivedData.length,
+            itemBuilder: (context, index) {
+              return Text(
+                _receivedData[index],
+                style: const TextStyle(
+                  color: Colors.greenAccent,
+                  fontFamily: 'SourceCodePro',
                 ),
-                Positioned(
-                  right: 8,
-                  top: 8,
-                  child: IconButton(
-                    icon: const Icon(
-                      Icons.cleaning_services,
-                      color: Colors.white70,
-                    ),
-                    onPressed: _clearReceivedData,
-                    tooltip: '清空接收区',
-                  ),
-                ),
-              ],
+              );
+            },
+          ),
+          Positioned(
+            right: 8,
+            top: 8,
+            child: IconButton(
+              icon: const Icon(
+                Icons.cleaning_services,
+                color: Colors.white70,
+              ),
+              onPressed: _clearReceivedData,
+              tooltip: '清空接收区',
             ),
           ),
-        ),
-        // Lower part: Dashboard / Configuration
-        Expanded(
-          flex: 1,
-          child: Container(
-            padding: const EdgeInsets.all(8.0),
-            color: Colors.grey[200],
-            child: SingleChildScrollView(
-              child: Column(
-                children: [
-                  // Panel 1: Serial Settings
-                  Card(
-                    elevation: 2,
-                    child: Padding(
-                      padding: const EdgeInsets.all(8.0),
-                      child: Column(
-                        children: [
-                          Row(
+        ],
+      ),
+    );
+  }
+
+  Widget _buildControlsArea(bool isSmallScreen) {
+    return Container(
+      padding: const EdgeInsets.all(8.0),
+      color: Colors.grey[200],
+      child: SingleChildScrollView(
+        child: Column(
+          children: [
+            // Panel 1: Serial Settings
+            Card(
+              elevation: 2,
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: DropdownButtonFormField<String>(
+                            value: _selectedPort,
+                            decoration: const InputDecoration(
+                              labelText: '串口',
+                              contentPadding: EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 0,
+                              ),
+                              border: OutlineInputBorder(),
+                            ),
+                            items: _availablePorts.map((port) {
+                              return DropdownMenuItem(
+                                value: port,
+                                child: Text(port),
+                              );
+                            }).toList(),
+                            onChanged: widget.serialService.isOpen
+                                ? null
+                                : (value) {
+                                    setState(() {
+                                      _selectedPort = value;
+                                    });
+                                  },
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.refresh),
+                          onPressed: _refreshPorts,
+                          tooltip: '刷新串口列表',
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: DropdownButtonFormField<int>(
+                            value: _baudRate,
+                            decoration: const InputDecoration(
+                              labelText: '波特率',
+                              contentPadding: EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 0,
+                              ),
+                              border: OutlineInputBorder(),
+                            ),
+                            items: _baudRates.map((rate) {
+                              return DropdownMenuItem(
+                                value: rate,
+                                child: Text(rate.toString()),
+                              );
+                            }).toList(),
+                            onChanged: widget.serialService.isOpen
+                                ? null
+                                : (value) {
+                                    if (value != null) {
+                                      setState(() {
+                                        _baudRate = value;
+                                      });
+                                    }
+                                  },
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    isSmallScreen
+                        ? Column(
                             children: [
-                              Expanded(
-                                child: DropdownButtonFormField<String>(
-                                  value: _selectedPort,
-                                  decoration: const InputDecoration(
-                                    labelText: '串口',
-                                    contentPadding: EdgeInsets.symmetric(
-                                      horizontal: 10,
-                                      vertical: 0,
-                                    ),
-                                    border: OutlineInputBorder(),
-                                  ),
-                                  items: _availablePorts.map((port) {
-                                    return DropdownMenuItem(
-                                      value: port,
-                                      child: Text(port),
-                                    );
-                                  }).toList(),
-                                  onChanged: widget.serialService.isOpen
-                                      ? null
-                                      : (value) {
-                                          setState(() {
-                                            _selectedPort = value;
-                                          });
-                                        },
-                                ),
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.refresh),
-                                onPressed: _refreshPorts,
-                                tooltip: '刷新串口列表',
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: DropdownButtonFormField<int>(
-                                  value: _baudRate,
-                                  decoration: const InputDecoration(
-                                    labelText: '波特率',
-                                    contentPadding: EdgeInsets.symmetric(
-                                      horizontal: 10,
-                                      vertical: 0,
-                                    ),
-                                    border: OutlineInputBorder(),
-                                  ),
-                                  items: _baudRates.map((rate) {
-                                    return DropdownMenuItem(
-                                      value: rate,
-                                      child: Text(rate.toString()),
-                                    );
-                                  }).toList(),
-                                  onChanged: widget.serialService.isOpen
-                                      ? null
-                                      : (value) {
-                                          if (value != null) {
+                              Row(
+                                children: [
+                                  Checkbox(
+                                    value: _rtsEnabled,
+                                    onChanged: widget.serialService.isOpen
+                                        ? null
+                                        : (value) {
                                             setState(() {
-                                              _baudRate = value;
+                                              _rtsEnabled = value ?? false;
                                             });
-                                          }
-                                        },
+                                          },
+                                  ),
+                                  const Text("RTS"),
+                                  const SizedBox(width: 10),
+                                  Checkbox(
+                                    value: _dtrEnabled,
+                                    onChanged: widget.serialService.isOpen
+                                        ? null
+                                        : (value) {
+                                            setState(() {
+                                              _dtrEnabled = value ?? false;
+                                            });
+                                          },
+                                  ),
+                                  const Text("DTR"),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              SizedBox(
+                                width: double.infinity,
+                                child: ElevatedButton.icon(
+                                  onPressed: _selectedPort == null
+                                      ? null
+                                      : _togglePort,
+                                  icon: Icon(
+                                    widget.serialService.isOpen
+                                        ? Icons.link_off
+                                        : Icons.link,
+                                  ),
+                                  label: Text(
+                                    widget.serialService.isOpen
+                                        ? '关闭串口'
+                                        : '打开串口',
+                                  ),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: widget.serialService.isOpen
+                                        ? Colors.red
+                                        : Colors.blue,
+                                    foregroundColor: Colors.white,
+                                  ),
                                 ),
                               ),
                             ],
-                          ),
-                          const SizedBox(height: 10),
-                          Row(
+                          )
+                        : Row(
                             children: [
                               Checkbox(
                                 value: _rtsEnabled,
@@ -534,66 +583,101 @@ class _SerialDebugContentState extends State<SerialDebugContent>
                               ),
                             ],
                           ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  // Panel 2: Send Area
-                  Card(
-                    elevation: 2,
-                    child: Padding(
-                      padding: const EdgeInsets.all(8.0),
-                      child: Column(
-                        children: [
-                          Row(
-                            children: [
-                              Expanded(
-                                child: TextField(
-                                  controller: _sendController,
-                                  decoration: const InputDecoration(
-                                    hintText: '输入要发送的内容...',
-                                    border: OutlineInputBorder(),
-                                    contentPadding: EdgeInsets.symmetric(
-                                      horizontal: 10,
-                                      vertical: 0,
-                                    ),
-                                  ),
-                                  onSubmitted: (_) => _sendData(),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              IconButton(
-                                onPressed: _sendData,
-                                icon: const Icon(Icons.send),
-                                color: Colors.blue,
-                                iconSize: 32,
-                              ),
-                            ],
-                          ),
-                          Row(
-                            children: [
-                              Checkbox(
-                                value: _addCRLF,
-                                onChanged: (value) {
-                                  setState(() {
-                                    _addCRLF = value ?? false;
-                                  });
-                                },
-                              ),
-                              const Text("自动添加 \\r\\n"),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
+            const SizedBox(height: 8),
+            // Panel 2: Send Area
+            Card(
+              elevation: 2,
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _sendController,
+                            decoration: const InputDecoration(
+                              hintText: '输入要发送的内容...',
+                              border: OutlineInputBorder(),
+                              contentPadding: EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 0,
+                              ),
+                            ),
+                            onSubmitted: (_) => _sendData(),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          onPressed: _sendData,
+                          icon: const Icon(Icons.send),
+                          color: Colors.blue,
+                          iconSize: 32,
+                        ),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        Checkbox(
+                          value: _addCRLF,
+                          onChanged: (value) {
+                            setState(() {
+                              _addCRLF = value ?? false;
+                            });
+                          },
+                        ),
+                        const Text("自动添加 \\r\\n"),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ),
-      ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context); // Required for AutomaticKeepAliveClientMixin
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Check if we are in a landscape mode with small height (like Pi 3.5 inch screen)
+        bool isSmallLandscape =
+            constraints.maxHeight < 450 && constraints.maxWidth > 400;
+        // Check if the screen is very narrow
+        bool isNarrow = constraints.maxWidth < 400;
+
+        if (isSmallLandscape) {
+          return Row(
+            children: [
+              Expanded(flex: 1, child: _buildLogArea()),
+              Expanded(
+                flex: 1,
+                child: _buildControlsArea(true),
+              ), // Pass true for small screen optimizations
+            ],
+          );
+        }
+
+        return Column(
+          children: [
+            // Upper part: Received Data
+            Expanded(flex: 2, child: _buildLogArea()),
+            // Lower part: Dashboard / Configuration
+            Expanded(
+              flex: 1,
+              child: _buildControlsArea(isNarrow),
+            ),
+          ],
+        );
+      },
     );
   }
 }

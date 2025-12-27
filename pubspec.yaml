@@ -74,6 +74,9 @@ flutter:
     - family: SourceCodePro
       fonts:
         - asset: fonts/SourceCodePro-Regular.ttf
+    - family: SourceHanSansHWSC
+      fonts:
+        - asset: fonts/SourceHanSansHWSC-Regular.otf
 
   # To add custom fonts to your application, add a fonts section here,
   # in this "flutter" section. Each entry in this list should have a
