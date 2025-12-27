@@ -257,6 +257,10 @@ class _SerialDebugContentState extends State<SerialDebugContent>
           }
           setState(() {
             _receivedData.add(line);
+            // Limit buffer size to save memory on Raspberry Pi
+            if (_receivedData.length > 200) {
+              _receivedData.removeAt(0);
+            }
           });
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (_scrollController.hasClients) {

@@ -159,6 +159,10 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
       } else {
         _logs.add(message);
       }
+      // Limit log size to save memory on Raspberry Pi
+      if (_logs.length > 100) {
+        _logs.removeAt(0);
+      }
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_logScrollController.hasClients) {
