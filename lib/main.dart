@@ -84,32 +84,50 @@ class WindowTitleBar extends StatelessWidget {
   }
 }
 
-class WindowButtons extends StatelessWidget {
+class WindowButtons extends StatefulWidget {
   const WindowButtons({super.key});
 
   @override
+  State<WindowButtons> createState() => _WindowButtonsState();
+}
+
+class _WindowButtonsState extends State<WindowButtons> {
+  bool _isHovering = false;
+
+  @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        _buildCircleButton(
-          color: const Color(0xFFFF5F56), // Red - Close
-          onTap: () => appWindow.close(),
-        ),
-        const SizedBox(width: 8),
-        _buildCircleButton(
-          color: const Color(0xFFFFBD2E), // Yellow - Minimize
-          onTap: () => appWindow.minimize(),
-        ),
-        const SizedBox(width: 8),
-        _buildCircleButton(
-          color: const Color(0xFF27C93F), // Green - Maximize/Restore
-          onTap: () => appWindow.maximizeOrRestore(),
-        ),
-      ],
+    return MouseRegion(
+      onEnter: (_) => setState(() => _isHovering = true),
+      onExit: (_) => setState(() => _isHovering = false),
+      child: Row(
+        children: [
+          _buildCircleButton(
+            color: const Color(0xFFFF5F56), // Red - Close
+            icon: Icons.close,
+            onTap: () => appWindow.close(),
+          ),
+          const SizedBox(width: 8),
+          _buildCircleButton(
+            color: const Color(0xFFFFBD2E), // Yellow - Minimize
+            icon: Icons.remove,
+            onTap: () => appWindow.minimize(),
+          ),
+          const SizedBox(width: 8),
+          _buildCircleButton(
+            color: const Color(0xFF27C93F), // Green - Maximize/Restore
+            icon: Icons.add,
+            onTap: () => appWindow.maximizeOrRestore(),
+          ),
+        ],
+      ),
     );
   }
 
-  Widget _buildCircleButton({required Color color, required VoidCallback onTap}) {
+  Widget _buildCircleButton({
+    required Color color,
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -119,6 +137,14 @@ class WindowButtons extends StatelessWidget {
           color: color,
           shape: BoxShape.circle,
         ),
+        alignment: Alignment.center,
+        child: _isHovering
+            ? Icon(
+                icon,
+                size: 9,
+                color: const Color(0xFF4D0000).withOpacity(0.6),
+              )
+            : null,
       ),
     );
   }
