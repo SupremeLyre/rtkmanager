@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_libserialport/flutter_libserialport.dart';
+import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
 import 'serial_service.dart';
 import 'ntrip_service.dart';
 
@@ -205,6 +208,9 @@ class _SerialDebugContentState extends State<SerialDebugContent>
   bool _rtsEnabled = false;
   bool _dtrEnabled = false;
   bool _addCRLF = false;
+  bool _isSavingToFile = false;
+  IOSink? _fileSink;
+  String? _currentSaveFilePath;
 
   StreamSubscription? _dataSubscription;
 
@@ -246,6 +252,9 @@ class _SerialDebugContentState extends State<SerialDebugContent>
     _dataSubscription = widget.serialService.lineStream.listen(
       (line) {
         if (mounted) {
+          if (_isSavingToFile && _fileSink != null) {
+            _fileSink!.writeln(line);
+          }
           setState(() {
             _receivedData.add(line);
           });
@@ -265,6 +274,62 @@ class _SerialDebugContentState extends State<SerialDebugContent>
         }
       },
     );
+  }
+
+  Future<void> _toggleSaveToFile() async {
+    if (_isSavingToFile) {
+      // Stop saving
+      await _fileSink?.flush();
+      await _fileSink?.close();
+      setState(() {
+        _isSavingToFile = false;
+        _fileSink = null;
+        _currentSaveFilePath = null;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("已停止保存文件")),
+        );
+      }
+    } else {
+      // Start saving
+      if (_selectedPort == null) {
+        _showError("请先选择串口");
+        return;
+      }
+
+      try {
+        final directory = await getApplicationDocumentsDirectory();
+        String portName = _selectedPort!;
+        
+        // Clean port name for filename
+        if (Platform.isLinux && portName.startsWith('/dev/')) {
+          portName = portName.substring(5);
+        }
+        
+        final now = DateTime.now();
+        final formatter = DateFormat('yyyy-MM-dd-HH-mm-ss');
+        final timestamp = formatter.format(now);
+        final fileName = '$portName-$timestamp.dat';
+        final filePath = '${directory.path}/$fileName';
+        
+        final file = File(filePath);
+        _fileSink = file.openWrite(mode: FileMode.append);
+        
+        setState(() {
+          _isSavingToFile = true;
+          _currentSaveFilePath = filePath;
+        });
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("开始保存到文件: $filePath")),
+          );
+        }
+      } catch (e) {
+        _showError("无法创建文件: $e");
+      }
+    }
   }
 
   void _refreshPorts() {
@@ -305,6 +370,9 @@ class _SerialDebugContentState extends State<SerialDebugContent>
   }
 
   void _closePort() {
+    if (_isSavingToFile) {
+      _toggleSaveToFile(); // Stop saving if port is closed
+    }
     widget.serialService.close();
     setState(() {}); // Update UI
   }
@@ -355,6 +423,7 @@ class _SerialDebugContentState extends State<SerialDebugContent>
   @override
   void dispose() {
     _dataSubscription?.cancel();
+    _fileSink?.close();
     _sendController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -631,6 +700,19 @@ class _SerialDebugContentState extends State<SerialDebugContent>
                           },
                         ),
                         const Text("自动添加 \\r\\n"),
+                        const Spacer(),
+                        ElevatedButton.icon(
+                          onPressed: _toggleSaveToFile,
+                          icon: Icon(
+                            _isSavingToFile ? Icons.stop : Icons.save_alt,
+                          ),
+                          label: Text(_isSavingToFile ? "停止保存" : "保存到文件"),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor:
+                                _isSavingToFile ? Colors.red : Colors.green,
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
                       ],
                     ),
                   ],
