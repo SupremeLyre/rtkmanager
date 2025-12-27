@@ -107,31 +107,35 @@ class _SerialDebugPageState extends State<SerialDebugPage>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        toolbarHeight: 36,
         leading: widget.onOpenDrawer != null
             ? IconButton(
                 icon: const Icon(Icons.menu),
+                iconSize: 20,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
                 onPressed: widget.onOpenDrawer,
               )
             : null,
         title: const Text(
           '串口调试助手',
-          style: TextStyle(fontWeight: FontWeight.bold),
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
         ),
         actions: [
           Padding(
-            padding: const EdgeInsets.only(right: 16.0),
+            padding: const EdgeInsets.only(right: 8.0),
             child: Container(
-              width: 24,
-              height: 24,
+              width: 16,
+              height: 16,
               decoration: BoxDecoration(
                 color: _getNtripStatusColor(),
                 shape: BoxShape.circle,
-                border: Border.all(color: Colors.white, width: 2),
+                border: Border.all(color: Colors.white, width: 1.5),
                 boxShadow: [
                   BoxShadow(
                     color: Colors.black.withOpacity(0.2),
-                    blurRadius: 4,
-                    offset: const Offset(0, 2),
+                    blurRadius: 2,
+                    offset: const Offset(0, 1),
                   ),
                 ],
               ),
@@ -139,32 +143,41 @@ class _SerialDebugPageState extends State<SerialDebugPage>
           ),
           IconButton(
             icon: const Icon(Icons.add),
+            iconSize: 20,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
             onPressed: _addTab,
             tooltip: '新建串口连接',
           ),
+          const SizedBox(width: 4),
         ],
-        bottom: TabBar(
-          controller: _tabController,
-          isScrollable: true,
-          tabs: _tabs.asMap().entries.map((entry) {
-            int idx = entry.key;
-            SerialTabItem tab = entry.value;
-            return Tab(
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(tab.title),
-                  if (tab.isClosable) ...[
-                    const SizedBox(width: 8),
-                    InkWell(
-                      onTap: () => _removeTab(idx),
-                      child: const Icon(Icons.close, size: 16),
-                    ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(30),
+          child: TabBar(
+            controller: _tabController,
+            isScrollable: true,
+            labelPadding: const EdgeInsets.symmetric(horizontal: 8),
+            tabs: _tabs.asMap().entries.map((entry) {
+              int idx = entry.key;
+              SerialTabItem tab = entry.value;
+              return Tab(
+                height: 30,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(tab.title, style: const TextStyle(fontSize: 13)),
+                    if (tab.isClosable) ...[
+                      const SizedBox(width: 4),
+                      InkWell(
+                        onTap: () => _removeTab(idx),
+                        child: const Icon(Icons.close, size: 14),
+                      ),
+                    ],
                   ],
-                ],
-              ),
-            );
-          }).toList(),
+                ),
+              );
+            }).toList(),
+          ),
         ),
       ),
       body: TabBarView(
@@ -475,7 +488,7 @@ class _SerialDebugContentState extends State<SerialDebugContent>
 
   Widget _buildControlsArea(bool isSmallScreen) {
     return Container(
-      padding: const EdgeInsets.all(8.0),
+      padding: const EdgeInsets.all(4.0),
       color: Colors.grey[200],
       child: SingleChildScrollView(
         child: Column(
@@ -484,7 +497,7 @@ class _SerialDebugContentState extends State<SerialDebugContent>
             Card(
               elevation: 2,
               child: Padding(
-                padding: const EdgeInsets.all(8.0),
+                padding: const EdgeInsets.all(4.0),
                 child: Column(
                   children: [
                     Row(
@@ -494,16 +507,18 @@ class _SerialDebugContentState extends State<SerialDebugContent>
                             value: _selectedPort,
                             decoration: const InputDecoration(
                               labelText: '串口',
+                              isDense: true,
                               contentPadding: EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 0,
+                                horizontal: 8,
+                                vertical: 8,
                               ),
                               border: OutlineInputBorder(),
                             ),
+                            style: const TextStyle(fontSize: 14, color: Colors.black),
                             items: _availablePorts.map((port) {
                               return DropdownMenuItem(
                                 value: port,
-                                child: Text(port),
+                                child: Text(port, style: const TextStyle(fontSize: 14, color: Colors.black)),
                               );
                             }).toList(),
                             onChanged: widget.serialService.isOpen
@@ -517,25 +532,30 @@ class _SerialDebugContentState extends State<SerialDebugContent>
                         ),
                         IconButton(
                           icon: const Icon(Icons.refresh),
+                          iconSize: 20,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
                           onPressed: _refreshPorts,
                           tooltip: '刷新串口列表',
                         ),
-                        const SizedBox(width: 10),
+                        const SizedBox(width: 4),
                         Expanded(
                           child: DropdownButtonFormField<int>(
                             value: _baudRate,
                             decoration: const InputDecoration(
                               labelText: '波特率',
+                              isDense: true,
                               contentPadding: EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 0,
+                                horizontal: 8,
+                                vertical: 8,
                               ),
                               border: OutlineInputBorder(),
                             ),
+                            style: const TextStyle(fontSize: 14, color: Colors.black),
                             items: _baudRates.map((rate) {
                               return DropdownMenuItem(
                                 value: rate,
-                                child: Text(rate.toString()),
+                                child: Text(rate.toString(), style: const TextStyle(fontSize: 14, color: Colors.black)),
                               );
                             }).toList(),
                             onChanged: widget.serialService.isOpen
@@ -551,40 +571,55 @@ class _SerialDebugContentState extends State<SerialDebugContent>
                         ),
                       ],
                     ),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 4),
                     isSmallScreen
                         ? Column(
                             children: [
                               Row(
                                 children: [
-                                  Checkbox(
-                                    value: _rtsEnabled,
-                                    onChanged: widget.serialService.isOpen
-                                        ? null
-                                        : (value) {
-                                            setState(() {
-                                              _rtsEnabled = value ?? false;
-                                            });
-                                          },
+                                  SizedBox(
+                                    height: 24,
+                                    child: Row(
+                                      children: [
+                                        Checkbox(
+                                          value: _rtsEnabled,
+                                          onChanged: widget.serialService.isOpen
+                                              ? null
+                                              : (value) {
+                                                  setState(() {
+                                                    _rtsEnabled = value ?? false;
+                                                  });
+                                                },
+                                        ),
+                                        const Text("RTS", style: TextStyle(fontSize: 12)),
+                                      ],
+                                    ),
                                   ),
-                                  const Text("RTS"),
-                                  const SizedBox(width: 10),
-                                  Checkbox(
-                                    value: _dtrEnabled,
-                                    onChanged: widget.serialService.isOpen
-                                        ? null
-                                        : (value) {
-                                            setState(() {
-                                              _dtrEnabled = value ?? false;
-                                            });
-                                          },
+                                  const SizedBox(width: 8),
+                                  SizedBox(
+                                    height: 24,
+                                    child: Row(
+                                      children: [
+                                        Checkbox(
+                                          value: _dtrEnabled,
+                                          onChanged: widget.serialService.isOpen
+                                              ? null
+                                              : (value) {
+                                                  setState(() {
+                                                    _dtrEnabled = value ?? false;
+                                                  });
+                                                },
+                                        ),
+                                        const Text("DTR", style: TextStyle(fontSize: 12)),
+                                      ],
+                                    ),
                                   ),
-                                  const Text("DTR"),
                                 ],
                               ),
-                              const SizedBox(height: 8),
+                              const SizedBox(height: 4),
                               SizedBox(
                                 width: double.infinity,
+                                height: 32,
                                 child: ElevatedButton.icon(
                                   onPressed: _selectedPort == null
                                       ? null
@@ -593,17 +628,20 @@ class _SerialDebugContentState extends State<SerialDebugContent>
                                     widget.serialService.isOpen
                                         ? Icons.link_off
                                         : Icons.link,
+                                    size: 16,
                                   ),
                                   label: Text(
                                     widget.serialService.isOpen
                                         ? '关闭串口'
                                         : '打开串口',
+                                    style: const TextStyle(fontSize: 13),
                                   ),
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: widget.serialService.isOpen
                                         ? Colors.red
                                         : Colors.blue,
                                     foregroundColor: Colors.white,
+                                    padding: EdgeInsets.zero,
                                   ),
                                 ),
                               ),
@@ -660,12 +698,12 @@ class _SerialDebugContentState extends State<SerialDebugContent>
                 ),
               ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 4),
             // Panel 2: Send Area
             Card(
               elevation: 2,
               child: Padding(
-                padding: const EdgeInsets.all(8.0),
+                padding: const EdgeInsets.all(4.0),
                 child: Column(
                   children: [
                     Row(
@@ -673,48 +711,67 @@ class _SerialDebugContentState extends State<SerialDebugContent>
                         Expanded(
                           child: TextField(
                             controller: _sendController,
+                            style: const TextStyle(fontSize: 14),
                             decoration: const InputDecoration(
                               hintText: '输入要发送的内容...',
+                              isDense: true,
                               border: OutlineInputBorder(),
                               contentPadding: EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 0,
+                                horizontal: 8,
+                                vertical: 8,
                               ),
                             ),
                             onSubmitted: (_) => _sendData(),
                           ),
                         ),
-                        const SizedBox(width: 8),
+                        const SizedBox(width: 4),
                         IconButton(
                           onPressed: _sendData,
                           icon: const Icon(Icons.send),
                           color: Colors.blue,
-                          iconSize: 32,
+                          iconSize: 24,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
                         ),
                       ],
                     ),
                     Row(
                       children: [
-                        Checkbox(
-                          value: _addCRLF,
-                          onChanged: (value) {
-                            setState(() {
-                              _addCRLF = value ?? false;
-                            });
-                          },
-                        ),
-                        const Text("自动添加 \\r\\n"),
-                        const Spacer(),
-                        ElevatedButton.icon(
-                          onPressed: _toggleSaveToFile,
-                          icon: Icon(
-                            _isSavingToFile ? Icons.stop : Icons.save_alt,
+                        SizedBox(
+                          height: 24,
+                          child: Row(
+                            children: [
+                              Checkbox(
+                                value: _addCRLF,
+                                onChanged: (value) {
+                                  setState(() {
+                                    _addCRLF = value ?? false;
+                                  });
+                                },
+                              ),
+                              const Text("自动添加 \\r\\n", style: TextStyle(fontSize: 12)),
+                            ],
                           ),
-                          label: Text(_isSavingToFile ? "停止保存" : "保存到文件"),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor:
-                                _isSavingToFile ? Colors.red : Colors.green,
-                            foregroundColor: Colors.white,
+                        ),
+                        const Spacer(),
+                        SizedBox(
+                          height: 28,
+                          child: ElevatedButton.icon(
+                            onPressed: _toggleSaveToFile,
+                            icon: Icon(
+                              _isSavingToFile ? Icons.stop : Icons.save_alt,
+                              size: 14,
+                            ),
+                            label: Text(
+                              _isSavingToFile ? "停止保存" : "保存到文件",
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor:
+                                  _isSavingToFile ? Colors.red : Colors.green,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                            ),
                           ),
                         ),
                       ],
@@ -734,23 +791,8 @@ class _SerialDebugContentState extends State<SerialDebugContent>
     super.build(context); // Required for AutomaticKeepAliveClientMixin
     return LayoutBuilder(
       builder: (context, constraints) {
-        // Check if we are in a landscape mode with small height (like Pi 3.5 inch screen)
-        bool isSmallLandscape =
-            constraints.maxHeight < 450 && constraints.maxWidth > 400;
         // Check if the screen is very narrow
         bool isNarrow = constraints.maxWidth < 400;
-
-        if (isSmallLandscape) {
-          return Row(
-            children: [
-              Expanded(flex: 1, child: _buildLogArea()),
-              Expanded(
-                flex: 1,
-                child: _buildControlsArea(true),
-              ), // Pass true for small screen optimizations
-            ],
-          );
-        }
 
         return Column(
           children: [
