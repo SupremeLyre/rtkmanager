@@ -225,9 +225,14 @@ class _SerialDebugContentState extends State<SerialDebugContent>
   IOSink? _fileSink;
   String? _currentSaveFilePath;
 
-  StreamSubscription? _dataSubscription;
+  StreamSubscription? _lineSubscription;
+  StreamSubscription? _rawSubscription;
 
   final List<String> _receivedData = [];
+  // 临时缓存，用于降低 UI 刷新频率
+  final List<String> _tempBuffer = [];
+  Timer? _uiUpdateTimer;
+
   final TextEditingController _sendController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
@@ -250,38 +255,60 @@ class _SerialDebugContentState extends State<SerialDebugContent>
     super.initState();
     _refreshPorts();
     _subscribeToStream();
+
+    // 启动定时器，每 200ms 刷新一次 UI，避免高频 setState 导致卡顿或显示异常
+    _uiUpdateTimer = Timer.periodic(const Duration(milliseconds: 200), (timer) {
+      if (_tempBuffer.isNotEmpty && mounted) {
+        setState(() {
+          _receivedData.addAll(_tempBuffer);
+          _tempBuffer.clear();
+          // Limit buffer size to save memory on Raspberry Pi
+          if (_receivedData.length > 200) {
+            _receivedData.removeRange(0, _receivedData.length - 200);
+          }
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scrollController.hasClients) {
+            _scrollController.jumpTo(
+              _scrollController.position.maxScrollExtent,
+            );
+          }
+        });
+      }
+    });
   }
 
   @override
   void didUpdateWidget(SerialDebugContent oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.serialService != oldWidget.serialService) {
-      _dataSubscription?.cancel();
+      _lineSubscription?.cancel();
+      _rawSubscription?.cancel();
       _subscribeToStream();
     }
   }
 
   void _subscribeToStream() {
-    _dataSubscription = widget.serialService.lineStream.listen(
+    // 1. 监听原始数据流用于文件保存 (Raw Data)
+    // 这样可以保证保存到文件的数据是原汁原味的，不受编码转换和换行处理的影响
+    _rawSubscription = widget.serialService.dataStream.listen(
+      (data) {
+        if (_isSavingToFile && _fileSink != null) {
+          try {
+            _fileSink!.add(data);
+          } catch (e) {
+            // Ignore write errors or handle them
+          }
+        }
+      },
+    );
+
+    // 2. 监听处理后的行数据流用于 UI 显示 (Lines)
+    _lineSubscription = widget.serialService.lineStream.listen(
       (line) {
         if (mounted) {
-          if (_isSavingToFile && _fileSink != null) {
-            _fileSink!.writeln(line);
-          }
-          setState(() {
-            _receivedData.add(line);
-            // Limit buffer size to save memory on Raspberry Pi
-            if (_receivedData.length > 200) {
-              _receivedData.removeAt(0);
-            }
-          });
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (_scrollController.hasClients) {
-              _scrollController.jumpTo(
-                _scrollController.position.maxScrollExtent,
-              );
-            }
-          });
+          // 将数据添加到临时缓存，由定时器统一刷新
+          _tempBuffer.add(line);
         }
       },
       onError: (error) {
@@ -439,7 +466,9 @@ class _SerialDebugContentState extends State<SerialDebugContent>
 
   @override
   void dispose() {
-    _dataSubscription?.cancel();
+    _uiUpdateTimer?.cancel();
+    _lineSubscription?.cancel();
+    _rawSubscription?.cancel();
     _fileSink?.close();
     _sendController.dispose();
     _scrollController.dispose();
