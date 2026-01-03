@@ -33,7 +33,12 @@ class SerialService {
   final _lineStreamController = StreamController<String>.broadcast();
   Stream<String> get lineStream => _lineStreamController.stream;
 
+  // Stream for raw decoded text (no line splitting)
+  final _textStreamController = StreamController<String>.broadcast();
+  Stream<String> get textStream => _textStreamController.stream;
+
   List<int> _buffer = [];
+  ByteConversionSink? _textConversionSink;
 
   bool get isOpen => _isOpen;
   SerialPort? get port => _port;
@@ -49,15 +54,25 @@ class SerialService {
 
         SerialPortConfig config = _port!.config;
         config.baudRate = baudRate;
+        config.bits = 8;
+        config.stopBits = 1;
+        config.parity = 0; // None
         config.rts = rts ? 1 : 0;
         config.dtr = dtr ? 1 : 0;
+        config.xonXoff = 0; // Disable software flow control
         _port!.config = config;
+
+        // Setup raw text decoder
+        _textConversionSink = utf8.decoder.startChunkedConversion(
+          _SafeSink(_textStreamController),
+        );
 
         _reader = SerialPortReader(_port!);
         _reader!.stream.listen(
           (data) {
             _dataStreamController.add(data);
             _processLines(data);
+            _textConversionSink?.add(data);
           },
           onError: (error) {
             if (_isOpen) {
@@ -67,6 +82,9 @@ class SerialService {
               }
               if (!_lineStreamController.isClosed) {
                 _lineStreamController.addError(error);
+              }
+              if (!_textStreamController.isClosed) {
+                _textStreamController.addError(error);
               }
             }
           },
@@ -91,6 +109,8 @@ class SerialService {
       _reader?.close();
       _port!.close();
     }
+    _textConversionSink?.close();
+    _textConversionSink = null;
     _isOpen = false;
     _port = null;
     _reader = null;
@@ -112,25 +132,65 @@ class SerialService {
   void _processLines(Uint8List data) {
     _buffer.addAll(data);
 
-    int index;
-    while ((index = _buffer.indexOf(10)) != -1) {
-      // 10 is \n
-      List<int> lineBytes = _buffer.sublist(0, index + 1);
-      _buffer = _buffer.sublist(index + 1);
+    int lastIndex = 0;
+    bool foundLine = false;
 
-      try {
-        // Decode as UTF-8, allowing malformed sequences to avoid crashes
-        String line = utf8.decode(lineBytes, allowMalformed: true).trim();
-        _lineStreamController.add(line);
-      } catch (e) {
-        // Handle decoding errors if necessary
+    // Scan for newlines efficiently
+    for (int i = 0; i < _buffer.length; i++) {
+      if (_buffer[i] == 10) { // 10 is \n
+        List<int> lineBytes = _buffer.sublist(lastIndex, i + 1);
+        try {
+          String line = utf8.decode(lineBytes, allowMalformed: true).trim();
+          if (line.isNotEmpty) {
+            _lineStreamController.add(line);
+          }
+        } catch (e) {
+          // Ignore decode errors
+        }
+        lastIndex = i + 1;
+        foundLine = true;
       }
+    }
+
+    // Remove processed data
+    if (foundLine) {
+      if (lastIndex >= _buffer.length) {
+        _buffer.clear();
+      } else {
+        _buffer = _buffer.sublist(lastIndex);
+      }
+    }
+
+    // Safety: prevent buffer from growing indefinitely if no newline found
+    // This prevents memory issues on low-end devices like Raspberry Pi
+    if (_buffer.length > 4096) {
+      // Keep only the last 1024 bytes to recover from overflow
+      _buffer = _buffer.sublist(_buffer.length - 1024);
     }
   }
 
   void dispose() {
     _dataStreamController.close();
     _lineStreamController.close();
+    _textStreamController.close();
     close();
+  }
+}
+
+class _SafeSink<T> implements Sink<T> {
+  final StreamController<T> _controller;
+
+  _SafeSink(this._controller);
+
+  @override
+  void add(T data) {
+    if (!_controller.isClosed) {
+      _controller.add(data);
+    }
+  }
+
+  @override
+  void close() {
+    // Do not close the controller
   }
 }

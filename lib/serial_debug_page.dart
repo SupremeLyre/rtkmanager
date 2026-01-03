@@ -260,8 +260,12 @@ class _SerialDebugContentState extends State<SerialDebugContent>
     _uiUpdateTimer = Timer.periodic(const Duration(milliseconds: 200), (timer) {
       if (_tempBuffer.isNotEmpty && mounted) {
         setState(() {
-          _receivedData.addAll(_tempBuffer);
+          // 将这一段时间内收到的所有碎片拼接成一个完整的字符串块
+          // 这样既保留了原始数据的连续性，又避免了 ListView 中出现大量细碎的行
+          String combinedText = _tempBuffer.join("");
+          _receivedData.add(combinedText);
           _tempBuffer.clear();
+          
           // Limit buffer size to save memory on Raspberry Pi
           if (_receivedData.length > 200) {
             _receivedData.removeRange(0, _receivedData.length - 200);
@@ -303,12 +307,13 @@ class _SerialDebugContentState extends State<SerialDebugContent>
       },
     );
 
-    // 2. 监听处理后的行数据流用于 UI 显示 (Lines)
-    _lineSubscription = widget.serialService.lineStream.listen(
-      (line) {
+    // 2. 监听处理后的文本流用于 UI 显示 (Raw Text Chunks)
+    // 使用 textStream 而不是 lineStream，避免人为分行
+    _lineSubscription = widget.serialService.textStream.listen(
+      (text) {
         if (mounted) {
           // 将数据添加到临时缓存，由定时器统一刷新
-          _tempBuffer.add(line);
+          _tempBuffer.add(text);
         }
       },
       onError: (error) {
