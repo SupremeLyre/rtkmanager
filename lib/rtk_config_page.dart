@@ -672,6 +672,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
               color: Colors.greenAccent,
               fontFamily: 'SourceCodePro',
               fontSize: 12,
+              fontFamilyFallback: ['SourceHanSansHWSC'],
             ),
           );
         },

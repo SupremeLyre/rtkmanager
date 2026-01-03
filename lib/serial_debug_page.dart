@@ -465,6 +465,7 @@ class _SerialDebugContentState extends State<SerialDebugContent>
                 style: const TextStyle(
                   color: Colors.greenAccent,
                   fontFamily: 'SourceCodePro',
+                  fontFamilyFallback: ['SourceHanSansHWSC'],
                 ),
               );
             },
