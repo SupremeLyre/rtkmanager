@@ -229,6 +229,7 @@ class _SerialDebugContentState extends State<SerialDebugContent>
   StreamSubscription? _rawSubscription;
 
   final List<String> _receivedData = [];
+  String _incompleteLine = "";
   // 临时缓存，用于降低 UI 刷新频率
   final List<String> _tempBuffer = [];
   Timer? _uiUpdateTimer;
@@ -261,14 +262,25 @@ class _SerialDebugContentState extends State<SerialDebugContent>
       if (_tempBuffer.isNotEmpty && mounted) {
         setState(() {
           // 将这一段时间内收到的所有碎片拼接成一个完整的字符串块
-          // 这样既保留了原始数据的连续性，又避免了 ListView 中出现大量细碎的行
           String combinedText = _tempBuffer.join("");
-          _receivedData.add(combinedText);
           _tempBuffer.clear();
-          
+
+          _incompleteLine += combinedText;
+
+          // Split into lines
+          int index;
+          while ((index = _incompleteLine.indexOf('\n')) != -1) {
+            String line = _incompleteLine.substring(0, index);
+            if (line.endsWith('\r')) {
+              line = line.substring(0, line.length - 1);
+            }
+            _receivedData.add(line);
+            _incompleteLine = _incompleteLine.substring(index + 1);
+          }
+
           // Limit buffer size to save memory on Raspberry Pi
-          if (_receivedData.length > 200) {
-            _receivedData.removeRange(0, _receivedData.length - 200);
+          if (_receivedData.length > 1000) {
+            _receivedData.removeRange(0, _receivedData.length - 1000);
           }
         });
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -295,17 +307,15 @@ class _SerialDebugContentState extends State<SerialDebugContent>
   void _subscribeToStream() {
     // 1. 监听原始数据流用于文件保存 (Raw Data)
     // 这样可以保证保存到文件的数据是原汁原味的，不受编码转换和换行处理的影响
-    _rawSubscription = widget.serialService.dataStream.listen(
-      (data) {
-        if (_isSavingToFile && _fileSink != null) {
-          try {
-            _fileSink!.add(data);
-          } catch (e) {
-            // Ignore write errors or handle them
-          }
+    _rawSubscription = widget.serialService.dataStream.listen((data) {
+      if (_isSavingToFile && _fileSink != null) {
+        try {
+          _fileSink!.add(data);
+        } catch (e) {
+          // Ignore write errors or handle them
         }
-      },
-    );
+      }
+    });
 
     // 2. 监听处理后的文本流用于 UI 显示 (Raw Text Chunks)
     // 使用 textStream 而不是 lineStream，避免人为分行
@@ -336,9 +346,9 @@ class _SerialDebugContentState extends State<SerialDebugContent>
         _currentSaveFilePath = null;
       });
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("已停止保存文件")),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("已停止保存文件")));
       }
     } else {
       // Start saving
@@ -350,30 +360,30 @@ class _SerialDebugContentState extends State<SerialDebugContent>
       try {
         final directory = await getApplicationDocumentsDirectory();
         String portName = _selectedPort!;
-        
+
         // Clean port name for filename
         if (Platform.isLinux && portName.startsWith('/dev/')) {
           portName = portName.substring(5);
         }
-        
+
         final now = DateTime.now();
         final formatter = DateFormat('yyyy-MM-dd-HH-mm-ss');
         final timestamp = formatter.format(now);
         final fileName = '$portName-$timestamp.dat';
         final filePath = '${directory.path}/$fileName';
-        
+
         final file = File(filePath);
         _fileSink = file.openWrite(mode: FileMode.append);
-        
+
         setState(() {
           _isSavingToFile = true;
           _currentSaveFilePath = filePath;
         });
-        
+
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("开始保存到文件: $filePath")),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text("开始保存到文件: $filePath")));
         }
       } catch (e) {
         _showError("无法创建文件: $e");
@@ -444,7 +454,11 @@ class _SerialDebugContentState extends State<SerialDebugContent>
       widget.serialService.write(bytes);
 
       setState(() {
-        _receivedData.add("[发送] $textToSend\n");
+        if (_incompleteLine.isNotEmpty) {
+          _receivedData.add(_incompleteLine);
+          _incompleteLine = "";
+        }
+        _receivedData.add("[发送] $textToSend");
         _sendController.clear();
       });
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -466,6 +480,7 @@ class _SerialDebugContentState extends State<SerialDebugContent>
   void _clearReceivedData() {
     setState(() {
       _receivedData.clear();
+      _incompleteLine = "";
     });
   }
 
@@ -492,10 +507,16 @@ class _SerialDebugContentState extends State<SerialDebugContent>
         children: [
           ListView.builder(
             controller: _scrollController,
-            itemCount: _receivedData.length,
+            itemCount: _receivedData.length + 1,
             itemBuilder: (context, index) {
+              String text;
+              if (index < _receivedData.length) {
+                text = _receivedData[index];
+              } else {
+                text = _incompleteLine;
+              }
               return Text(
-                _receivedData[index],
+                text,
                 style: const TextStyle(
                   color: Colors.greenAccent,
                   fontFamily: 'SourceCodePro',
@@ -508,10 +529,7 @@ class _SerialDebugContentState extends State<SerialDebugContent>
             right: 8,
             top: 8,
             child: IconButton(
-              icon: const Icon(
-                Icons.cleaning_services,
-                color: Colors.white70,
-              ),
+              icon: const Icon(Icons.cleaning_services, color: Colors.white70),
               onPressed: _clearReceivedData,
               tooltip: '清空接收区',
             ),
@@ -549,11 +567,20 @@ class _SerialDebugContentState extends State<SerialDebugContent>
                               ),
                               border: OutlineInputBorder(),
                             ),
-                            style: const TextStyle(fontSize: 14, color: Colors.black),
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Colors.black,
+                            ),
                             items: _availablePorts.map((port) {
                               return DropdownMenuItem(
                                 value: port,
-                                child: Text(port, style: const TextStyle(fontSize: 14, color: Colors.black)),
+                                child: Text(
+                                  port,
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    color: Colors.black,
+                                  ),
+                                ),
                               );
                             }).toList(),
                             onChanged: widget.serialService.isOpen
@@ -586,11 +613,20 @@ class _SerialDebugContentState extends State<SerialDebugContent>
                               ),
                               border: OutlineInputBorder(),
                             ),
-                            style: const TextStyle(fontSize: 14, color: Colors.black),
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Colors.black,
+                            ),
                             items: _baudRates.map((rate) {
                               return DropdownMenuItem(
                                 value: rate,
-                                child: Text(rate.toString(), style: const TextStyle(fontSize: 14, color: Colors.black)),
+                                child: Text(
+                                  rate.toString(),
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    color: Colors.black,
+                                  ),
+                                ),
                               );
                             }).toList(),
                             onChanged: widget.serialService.isOpen
@@ -622,11 +658,15 @@ class _SerialDebugContentState extends State<SerialDebugContent>
                                               ? null
                                               : (value) {
                                                   setState(() {
-                                                    _rtsEnabled = value ?? false;
+                                                    _rtsEnabled =
+                                                        value ?? false;
                                                   });
                                                 },
                                         ),
-                                        const Text("RTS", style: TextStyle(fontSize: 12)),
+                                        const Text(
+                                          "RTS",
+                                          style: TextStyle(fontSize: 12),
+                                        ),
                                       ],
                                     ),
                                   ),
@@ -641,11 +681,15 @@ class _SerialDebugContentState extends State<SerialDebugContent>
                                               ? null
                                               : (value) {
                                                   setState(() {
-                                                    _dtrEnabled = value ?? false;
+                                                    _dtrEnabled =
+                                                        value ?? false;
                                                   });
                                                 },
                                         ),
-                                        const Text("DTR", style: TextStyle(fontSize: 12)),
+                                        const Text(
+                                          "DTR",
+                                          style: TextStyle(fontSize: 12),
+                                        ),
                                       ],
                                     ),
                                   ),
@@ -784,7 +828,10 @@ class _SerialDebugContentState extends State<SerialDebugContent>
                                   });
                                 },
                               ),
-                              const Text("自动添加 \\r\\n", style: TextStyle(fontSize: 12)),
+                              const Text(
+                                "自动添加 \\r\\n",
+                                style: TextStyle(fontSize: 12),
+                              ),
                             ],
                           ),
                         ),
@@ -802,10 +849,13 @@ class _SerialDebugContentState extends State<SerialDebugContent>
                               style: const TextStyle(fontSize: 12),
                             ),
                             style: ElevatedButton.styleFrom(
-                              backgroundColor:
-                                  _isSavingToFile ? Colors.red : Colors.green,
+                              backgroundColor: _isSavingToFile
+                                  ? Colors.red
+                                  : Colors.green,
                               foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                              ),
                             ),
                           ),
                         ),
@@ -834,10 +884,7 @@ class _SerialDebugContentState extends State<SerialDebugContent>
             // Upper part: Received Data
             Expanded(flex: 2, child: _buildLogArea()),
             // Lower part: Dashboard / Configuration
-            Expanded(
-              flex: 1,
-              child: _buildControlsArea(isNarrow),
-            ),
+            Expanded(flex: 1, child: _buildControlsArea(isNarrow)),
           ],
         );
       },
