@@ -23,6 +23,7 @@ class _SerialDebugPageState extends State<SerialDebugPage>
   late TabController _tabController;
   final List<SerialTabItem> _tabs = [];
   final NtripService _ntripService = NtripService();
+  bool _isGlobalSaving = false;
 
   @override
   void initState() {
@@ -34,12 +35,43 @@ class _SerialDebugPageState extends State<SerialDebugPage>
       SerialTabItem(
         title: "主串口",
         service: SerialService(), // Singleton
-        key: GlobalKey(),
+        key: GlobalKey<SerialDebugContentState>(),
         isClosable: false,
       ),
     );
 
     _tabController = TabController(length: _tabs.length, vsync: this);
+  }
+
+  Future<void> _toggleGlobalSaving() async {
+    bool newState = !_isGlobalSaving;
+
+    for (var tab in _tabs) {
+      var state = tab.key.currentState;
+      if (state != null) {
+        state.setGlobalOverride(newState);
+        if (newState) {
+          // If turning on global saving, start saving on all
+          await state.startSavingByParent();
+        } else {
+          // If turning off, stop saving on all
+          await state.stopSavingByParent();
+        }
+      }
+    }
+
+    setState(() {
+      _isGlobalSaving = newState;
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(newState ? "已开启所有串口保存" : "已停止所有串口保存"),
+          backgroundColor: newState ? Colors.green : Colors.orange,
+        ),
+      );
+    }
   }
 
   void _onNtripStateChanged() {
@@ -59,7 +91,7 @@ class _SerialDebugPageState extends State<SerialDebugPage>
         SerialTabItem(
           title: "串口 ${_tabs.length + 1}",
           service: SerialService.create(),
-          key: GlobalKey(),
+          key: GlobalKey<SerialDebugContentState>(),
           isClosable: true,
         ),
       );
@@ -150,6 +182,24 @@ class _SerialDebugPageState extends State<SerialDebugPage>
             tooltip: '新建串口连接',
           ),
           const SizedBox(width: 4),
+          Padding(
+            padding: const EdgeInsets.only(right: 8.0),
+            child: SizedBox(
+              width: 32,
+              height: 32,
+              child: IconButton(
+                icon: Icon(
+                  _isGlobalSaving ? Icons.save_as : Icons.save_alt,
+                  color: _isGlobalSaving ? Colors.redAccent : null,
+                ),
+                iconSize: 20,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                onPressed: _toggleGlobalSaving,
+                tooltip: _isGlobalSaving ? '停止所有保存' : '保存所有数据',
+              ),
+            ),
+          ),
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(30),
@@ -193,7 +243,7 @@ class _SerialDebugPageState extends State<SerialDebugPage>
 class SerialTabItem {
   String title;
   final SerialService service;
-  final GlobalKey key;
+  final GlobalKey<SerialDebugContentState> key;
   final bool isClosable;
 
   SerialTabItem({
@@ -210,10 +260,10 @@ class SerialDebugContent extends StatefulWidget {
   const SerialDebugContent({super.key, required this.serialService});
 
   @override
-  State<SerialDebugContent> createState() => _SerialDebugContentState();
+  State<SerialDebugContent> createState() => SerialDebugContentState();
 }
 
-class _SerialDebugContentState extends State<SerialDebugContent>
+class SerialDebugContentState extends State<SerialDebugContent>
     with AutomaticKeepAliveClientMixin {
   List<String> _availablePorts = [];
   String? _selectedPort;
@@ -222,6 +272,7 @@ class _SerialDebugContentState extends State<SerialDebugContent>
   bool _dtrEnabled = false;
   bool _addCRLF = false;
   bool _isSavingToFile = false;
+  bool _isGlobalOverride = false;
   IOSink? _fileSink;
   String? _currentSaveFilePath;
 
@@ -335,6 +386,26 @@ class _SerialDebugContentState extends State<SerialDebugContent>
     );
   }
 
+  void setGlobalOverride(bool active) {
+    if (mounted) {
+      setState(() {
+        _isGlobalOverride = active;
+      });
+    }
+  }
+
+  Future<void> startSavingByParent() async {
+    if (!_isSavingToFile && widget.serialService.isOpen) {
+      await _toggleSaveToFile();
+    }
+  }
+
+  Future<void> stopSavingByParent() async {
+    if (_isSavingToFile) {
+      await _toggleSaveToFile();
+    }
+  }
+
   Future<void> _toggleSaveToFile() async {
     if (_isSavingToFile) {
       // Stop saving
@@ -354,6 +425,11 @@ class _SerialDebugContentState extends State<SerialDebugContent>
       // Start saving
       if (_selectedPort == null) {
         _showError("请先选择串口");
+        return;
+      }
+
+      if (!widget.serialService.isOpen) {
+        _showError("请先打开串口");
         return;
       }
 
@@ -839,19 +915,22 @@ class _SerialDebugContentState extends State<SerialDebugContent>
                         SizedBox(
                           height: 28,
                           child: ElevatedButton.icon(
-                            onPressed: _toggleSaveToFile,
+                            onPressed: _isGlobalOverride ? null : _toggleSaveToFile,
                             icon: Icon(
                               _isSavingToFile ? Icons.stop : Icons.save_alt,
                               size: 14,
                             ),
                             label: Text(
-                              _isSavingToFile ? "停止保存" : "保存到文件",
+                              _isGlobalOverride
+                                  ? "一键保存中"
+                                  : (_isSavingToFile ? "停止保存" : "保存到文件"),
                               style: const TextStyle(fontSize: 12),
                             ),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: _isSavingToFile
                                   ? Colors.red
                                   : Colors.green,
+                              disabledBackgroundColor: Colors.grey,
                               foregroundColor: Colors.white,
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 8,
