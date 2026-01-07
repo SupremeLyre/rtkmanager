@@ -321,10 +321,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
           children: [
             const Text(
               'NTRIP 连接配置',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-              ),
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
             Row(
@@ -338,7 +335,10 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                       labelText: 'IP 地址 / 域名',
                       border: OutlineInputBorder(),
                       isDense: true,
-                      contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 8,
+                      ),
                     ),
                   ),
                 ),
@@ -352,7 +352,10 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                       labelText: '端口',
                       border: OutlineInputBorder(),
                       isDense: true,
-                      contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 8,
+                      ),
                     ),
                     keyboardType: TextInputType.number,
                   ),
@@ -370,7 +373,10 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                       labelText: '用户名',
                       border: OutlineInputBorder(),
                       isDense: true,
-                      contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 8,
+                      ),
                     ),
                   ),
                 ),
@@ -383,7 +389,14 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                       labelText: '密码',
                       border: const OutlineInputBorder(),
                       isDense: true,
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 8,
+                      ),
+                      suffixIconConstraints: const BoxConstraints(
+                        minWidth: 32,
+                        maxHeight: 32,
+                      ),
                       suffixIcon: IconButton(
                         icon: Icon(
                           _isPasswordVisible
@@ -416,7 +429,10 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                       labelText: '挂载点',
                       border: OutlineInputBorder(),
                       isDense: true,
-                      contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 8,
+                      ),
                     ),
                     items: _mountPoints.map((mp) {
                       return DropdownMenuItem(
@@ -436,7 +452,9 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                   height: 36,
                   child: ElevatedButton(
                     onPressed: _getMountPoints,
-                    style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8)),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                    ),
                     child: const Text('获取列表', style: TextStyle(fontSize: 13)),
                   ),
                 ),
@@ -460,7 +478,10 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                           flex: 2,
                           child: DropdownButtonFormField<String>(
                             value: item.portName,
-                            style: const TextStyle(fontSize: 14, color: Colors.black),
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Colors.black,
+                            ),
                             decoration: const InputDecoration(
                               labelText: '串口',
                               border: OutlineInputBorder(),
@@ -473,7 +494,13 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                             items: _availablePorts.map((port) {
                               return DropdownMenuItem(
                                 value: port,
-                                child: Text(port, style: const TextStyle(fontSize: 14, color: Colors.black)),
+                                child: Text(
+                                  port,
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    color: Colors.black,
+                                  ),
+                                ),
                               );
                             }).toList(),
                             onChanged: (value) {
@@ -488,7 +515,10 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                           flex: 1,
                           child: DropdownButtonFormField<int>(
                             value: item.baudRate,
-                            style: const TextStyle(fontSize: 14, color: Colors.black),
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Colors.black,
+                            ),
                             decoration: const InputDecoration(
                               labelText: '波特率',
                               border: OutlineInputBorder(),
@@ -501,7 +531,13 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                             items: _baudRates.map((rate) {
                               return DropdownMenuItem(
                                 value: rate,
-                                child: Text(rate.toString(), style: const TextStyle(fontSize: 14, color: Colors.black)),
+                                child: Text(
+                                  rate.toString(),
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    color: Colors.black,
+                                  ),
+                                ),
                               );
                             }).toList(),
                             onChanged: (value) {
@@ -512,10 +548,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                           ),
                         ),
                         IconButton(
-                          icon: const Icon(
-                            Icons.delete,
-                            color: Colors.red,
-                          ),
+                          icon: const Icon(Icons.delete, color: Colors.red),
                           iconSize: 20,
                           padding: EdgeInsets.zero,
                           constraints: const BoxConstraints(),
@@ -540,8 +573,13 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                           });
                         },
                         icon: const Icon(Icons.add, size: 16),
-                        label: const Text("添加输出串口", style: TextStyle(fontSize: 13)),
-                        style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8)),
+                        label: const Text(
+                          "添加输出串口",
+                          style: TextStyle(fontSize: 13),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                        ),
                       ),
                     ),
                     const SizedBox(width: 4),
@@ -573,16 +611,16 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                 ),
                 if (_outputToFile)
                   Padding(
-                    padding: const EdgeInsets.only(
-                      left: 16.0,
-                      bottom: 4.0,
-                    ),
+                    padding: const EdgeInsets.only(left: 16.0, bottom: 4.0),
                     child: Row(
                       children: [
                         Expanded(
                           child: Text(
                             _outputFilePath ?? '未选择文件',
-                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            style: const TextStyle(
+                              color: Colors.grey,
+                              fontSize: 12,
+                            ),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -590,8 +628,15 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                           height: 28,
                           child: ElevatedButton(
                             onPressed: _pickFile,
-                            style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8)),
-                            child: const Text('选择文件', style: TextStyle(fontSize: 12)),
+                            style: ElevatedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                              ),
+                            ),
+                            child: const Text(
+                              '选择文件',
+                              style: TextStyle(fontSize: 12),
+                            ),
                           ),
                         ),
                       ],
@@ -625,15 +670,11 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                     child: ElevatedButton.icon(
                       onPressed: _connect,
                       icon: Icon(
-                        _ntripService.isConnected
-                            ? Icons.link_off
-                            : Icons.link,
+                        _ntripService.isConnected ? Icons.link_off : Icons.link,
                         size: 18,
                       ),
                       label: Text(
-                        _ntripService.isConnected
-                            ? '断开 NTRIP'
-                            : '连接 NTRIP',
+                        _ntripService.isConnected ? '断开 NTRIP' : '连接 NTRIP',
                         style: const TextStyle(fontSize: 14),
                       ),
                       style: ElevatedButton.styleFrom(

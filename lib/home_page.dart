@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'serial_debug_page.dart';
 import 'rtk_config_page.dart';
+import 'positioning_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -28,30 +29,42 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       key: _scaffoldKey,
-      drawer: Drawer(
-        child: ListView(
-          padding: EdgeInsets.zero,
-          children: [
-            const DrawerHeader(
-              decoration: BoxDecoration(color: Colors.blue),
-              child: Text(
-                'RTK Manager\r\nby SupremeLyre',
-                style: TextStyle(color: Colors.white, fontSize: 24),
+      drawer: SizedBox(
+        width: 200,
+        child: Drawer(
+          child: ListView(
+            padding: EdgeInsets.zero,
+            children: [
+              Container(
+                height: 80,
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                decoration: const BoxDecoration(color: Colors.blue),
+                alignment: Alignment.bottomLeft,
+                child: const Text(
+                  'RTK Manager\r\nby SupremeLyre',
+                  style: TextStyle(color: Colors.white, fontSize: 18),
+                ),
               ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.developer_board),
-              title: const Text('串口调试助手'),
-              selected: _selectedIndex == 0,
-              onTap: () => _onItemTapped(0),
-            ),
-            ListTile(
-              leading: const Icon(Icons.settings),
-              title: const Text('RTK 配置'),
-              selected: _selectedIndex == 1,
-              onTap: () => _onItemTapped(1),
-            ),
-          ],
+              ListTile(
+                leading: const Icon(Icons.developer_board),
+                title: const Text('串口调试助手'),
+                selected: _selectedIndex == 0,
+                onTap: () => _onItemTapped(0),
+              ),
+              ListTile(
+                leading: const Icon(Icons.settings),
+                title: const Text('RTK 配置'),
+                selected: _selectedIndex == 1,
+                onTap: () => _onItemTapped(1),
+              ),
+              ListTile(
+                leading: const Icon(Icons.map),
+                title: const Text('定位结果'),
+                selected: _selectedIndex == 2,
+                onTap: () => _onItemTapped(2),
+              ),
+            ],
+          ),
         ),
       ),
       body: IndexedStack(
@@ -59,6 +72,7 @@ class _HomePageState extends State<HomePage> {
         children: [
           SerialDebugPage(onOpenDrawer: _openDrawer),
           RtkConfigPage(onOpenDrawer: _openDrawer),
+          MobilePositioningPage(onOpenDrawer: _openDrawer),
         ],
       ),
     );
