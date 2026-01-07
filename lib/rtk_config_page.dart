@@ -331,13 +331,43 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                   child: TextField(
                     controller: _ipController,
                     style: const TextStyle(fontSize: 14),
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       labelText: 'IP 地址 / 域名',
-                      border: OutlineInputBorder(),
+                      border: const OutlineInputBorder(),
                       isDense: true,
-                      contentPadding: EdgeInsets.symmetric(
+                      contentPadding: const EdgeInsets.symmetric(
                         horizontal: 8,
                         vertical: 8,
+                      ),
+                      suffixIconConstraints: const BoxConstraints(
+                        minWidth: 32,
+                        maxHeight: 32,
+                      ),
+                      suffixIcon: PopupMenuButton<String>(
+                        icon: const Icon(Icons.arrow_drop_down, size: 20),
+                        padding: EdgeInsets.zero,
+                        tooltip: '常用地址',
+                        onSelected: (String value) {
+                          _ipController.text = value;
+                        },
+                        itemBuilder: (BuildContext context) {
+                          return [
+                            '203.107.45.154', // Qianxun
+                            'sdk.pnt.10086.cn', // CMCC
+                            '103.143.19.54', // Sixents
+                            'rtk.huacenav.com', // CHCNAV
+                            '140.143.212.42', // Tencent Cloud / Others
+                          ].map((String choice) {
+                            return PopupMenuItem<String>(
+                              value: choice,
+                              height: 32,
+                              child: Text(
+                                choice,
+                                style: const TextStyle(fontSize: 13),
+                              ),
+                            );
+                          }).toList();
+                        },
                       ),
                     ),
                   ),
@@ -348,13 +378,40 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                   child: TextField(
                     controller: _portController,
                     style: const TextStyle(fontSize: 14),
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       labelText: '端口',
-                      border: OutlineInputBorder(),
+                      border: const OutlineInputBorder(),
                       isDense: true,
-                      contentPadding: EdgeInsets.symmetric(
+                      contentPadding: const EdgeInsets.symmetric(
                         horizontal: 8,
                         vertical: 8,
+                      ),
+                      suffixIconConstraints: const BoxConstraints(
+                          minWidth: 32, maxHeight: 32),
+                      suffixIcon: PopupMenuButton<String>(
+                        icon: const Icon(Icons.arrow_drop_down, size: 20),
+                        padding: EdgeInsets.zero,
+                        tooltip: '常用端口',
+                        onSelected: (String value) {
+                          _portController.text = value;
+                        },
+                        itemBuilder: (BuildContext context) {
+                          return [
+                            '2101', // Standard
+                            '8001',
+                            '8002',
+                            '8003',
+                          ].map((String choice) {
+                            return PopupMenuItem<String>(
+                              value: choice,
+                              height: 32,
+                              child: Text(
+                                choice,
+                                style: const TextStyle(fontSize: 13),
+                              ),
+                            );
+                          }).toList();
+                        },
                       ),
                     ),
                     keyboardType: TextInputType.number,
