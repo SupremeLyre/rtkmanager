@@ -387,7 +387,9 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                         vertical: 8,
                       ),
                       suffixIconConstraints: const BoxConstraints(
-                          minWidth: 32, maxHeight: 32),
+                        minWidth: 32,
+                        maxHeight: 32,
+                      ),
                       suffixIcon: PopupMenuButton<String>(
                         icon: const Icon(Icons.arrow_drop_down, size: 20),
                         padding: EdgeInsets.zero,
