@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_libserialport/flutter_libserialport.dart';
 import 'package:intl/intl.dart';
@@ -467,9 +467,14 @@ class SerialDebugContentState extends State<SerialDebugContent>
     }
   }
 
-  void _refreshPorts() {
+  Future<void> _refreshPorts() async {
+    // 使用 compute 将耗时的串口扫描操作放到后台 isolate 执行，避免阻塞 UI 线程
+    final ports = await compute(_getKnownPorts, null);
+
+    if (!mounted) return;
+
     setState(() {
-      _availablePorts = SerialPort.availablePorts;
+      _availablePorts = ports;
       if (_availablePorts.isNotEmpty && _selectedPort == null) {
         _selectedPort = _availablePorts.first;
       } else if (!_availablePorts.contains(_selectedPort)) {
@@ -633,7 +638,7 @@ class SerialDebugContentState extends State<SerialDebugContent>
                       children: [
                         Expanded(
                           child: DropdownButtonFormField<String>(
-                            value: _selectedPort,
+                            initialValue: _selectedPort,
                             decoration: const InputDecoration(
                               labelText: '串口',
                               isDense: true,
@@ -679,7 +684,7 @@ class SerialDebugContentState extends State<SerialDebugContent>
                         const SizedBox(width: 4),
                         Expanded(
                           child: DropdownButtonFormField<int>(
-                            value: _baudRate,
+                            initialValue: _baudRate,
                             decoration: const InputDecoration(
                               labelText: '波特率',
                               isDense: true,
@@ -915,7 +920,9 @@ class SerialDebugContentState extends State<SerialDebugContent>
                         SizedBox(
                           height: 28,
                           child: ElevatedButton.icon(
-                            onPressed: _isGlobalOverride ? null : _toggleSaveToFile,
+                            onPressed: _isGlobalOverride
+                                ? null
+                                : _toggleSaveToFile,
                             icon: Icon(
                               _isSavingToFile ? Icons.stop : Icons.save_alt,
                               size: 14,
@@ -969,4 +976,8 @@ class SerialDebugContentState extends State<SerialDebugContent>
       },
     );
   }
+}
+
+List<String> _getKnownPorts(dynamic message) {
+  return SerialPort.availablePorts;
 }

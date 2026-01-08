@@ -482,7 +482,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
               children: [
                 Expanded(
                   child: DropdownButtonFormField<String>(
-                    value: _selectedMountPoint,
+                    initialValue: _selectedMountPoint,
                     style: const TextStyle(fontSize: 14, color: Colors.black),
                     decoration: const InputDecoration(
                       labelText: '挂载点',
@@ -536,7 +536,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                         Expanded(
                           flex: 2,
                           child: DropdownButtonFormField<String>(
-                            value: item.portName,
+                            initialValue: item.portName,
                             style: const TextStyle(
                               fontSize: 14,
                               color: Colors.black,
@@ -573,7 +573,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                         Expanded(
                           flex: 1,
                           child: DropdownButtonFormField<int>(
-                            value: item.baudRate,
+                            initialValue: item.baudRate,
                             style: const TextStyle(
                               fontSize: 14,
                               color: Colors.black,
