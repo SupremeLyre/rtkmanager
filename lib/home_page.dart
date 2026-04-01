@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'serial_debug_page.dart';
 import 'rtk_config_page.dart';
 import 'positioning_page.dart';
+import 'satellite_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -63,6 +64,12 @@ class _HomePageState extends State<HomePage> {
                 selected: _selectedIndex == 2,
                 onTap: () => _onItemTapped(2),
               ),
+              ListTile(
+                leading: const Icon(Icons.satellite),
+                title: const Text('卫星信息'),
+                selected: _selectedIndex == 3,
+                onTap: () => _onItemTapped(3),
+              ),
             ],
           ),
         ),
@@ -73,6 +80,7 @@ class _HomePageState extends State<HomePage> {
           SerialDebugPage(onOpenDrawer: _openDrawer),
           RtkConfigPage(onOpenDrawer: _openDrawer),
           MobilePositioningPage(onOpenDrawer: _openDrawer),
+          SatellitePage(onOpenDrawer: _openDrawer),
         ],
       ),
     );
