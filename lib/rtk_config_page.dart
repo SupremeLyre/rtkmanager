@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter_libserialport/flutter_libserialport.dart';
 import 'serial_service.dart';
 import 'ntrip_service.dart';
+import 'imu_data_parser.dart';
 
 class RtkConfigPage extends StatefulWidget {
   final VoidCallback onOpenDrawer;
@@ -37,6 +38,12 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
 
   bool _autoReconnectEnabled = false;
   Timer? _reconnectTimer;
+
+  // GGA Source Configuration
+  String _ggaSourcePort = "主串口";
+  int _ggaSourceBaudRate = 115200;
+  SerialService? _ggaSerialService;
+  bool _ownGgaService = false;
 
   // Output Configuration
   bool _outputToFile = false;
@@ -136,6 +143,12 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
     _ntripDataSubscription?.cancel();
     _ntripDataSubscription = null;
 
+    if (_ownGgaService && _ggaSerialService != null) {
+      _ggaSerialService!.close();
+      _ggaSerialService = null;
+      _ownGgaService = false;
+    }
+
     // Close output resources
     for (var item in _outputSerialItems) {
       item.serialPort?.close();
@@ -211,6 +224,42 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
     if (_ipController.text.isEmpty || _portController.text.isEmpty) {
       _addLog("错误: 请输入 IP 和端口");
       return;
+    }
+
+    // Setup GGA Source Service
+    if (_ggaSourcePort == "主串口") {
+      _ggaSerialService = _serialService;
+      _ownGgaService = false;
+    } else if (_ggaSourcePort == "从IMU解析") {
+      _ggaSerialService = null;
+      _ownGgaService = false;
+    } else {
+      var existingService = SerialService.getActiveService(_ggaSourcePort);
+      if (existingService != null && existingService.isOpen) {
+        _ggaSerialService = existingService;
+        _ownGgaService = false;
+      } else {
+        _ggaSerialService = SerialService.create();
+        try {
+          _ggaSerialService!.open(
+            _ggaSourcePort,
+            _ggaSourceBaudRate,
+            false,
+            false,
+          );
+          if (!_ggaSerialService!.isOpen) {
+            _addLog("错误: 无法打开 GGA 来源串口 $_ggaSourcePort");
+            _ggaSerialService = null;
+            return;
+          }
+          _ownGgaService = true;
+          _addLog("已打开 GGA 来源串口: $_ggaSourcePort");
+        } catch (e) {
+          _addLog("错误: 打开 GGA 来源串口失败 $_ggaSourcePort $e");
+          _ggaSerialService = null;
+          return;
+        }
+      }
     }
 
     // Setup Output Destination
@@ -296,15 +345,102 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
     }
   }
 
-  void _startForwardingGNGGA() {
-    if (!_serialService.isOpen) {
-      _addLog("警告: 串口未打开，无法获取 GNGGA 数据");
+  String _generateGga(ImuData data) {
+    if (data.lat == null || data.lon == null) return "";
+
+    // Time: hhmmss.ss
+    String hh = (data.utcHour ?? 0).toString().padLeft(2, '0');
+    String mm = (data.utcMin ?? 0).toString().padLeft(2, '0');
+    String ss = (data.utcSec ?? 0).toString().padLeft(2, '0');
+    String mss = (data.utcMsec ?? 0).toString().padLeft(3, '0').substring(0, 2);
+    String timeStr = "$hh$mm$ss.$mss";
+
+    // Lat: ddmm.mmmmmmm
+    double lat = data.lat!.abs();
+    int latDeg = lat.floor();
+    double latMin = (lat - latDeg) * 60;
+    String latStr =
+        "${latDeg.toString().padLeft(2, '0')}${latMin.toStringAsFixed(7).padLeft(10, '0')}";
+    String nsStr = data.lat! >= 0 ? "N" : "S";
+
+    // Lon: dddmm.mmmmmmm
+    double lon = data.lon!.abs();
+    int lonDeg = lon.floor();
+    double lonMin = (lon - lonDeg) * 60;
+    String lonStr =
+        "${lonDeg.toString().padLeft(3, '0')}${lonMin.toStringAsFixed(7).padLeft(10, '0')}";
+    String ewStr = data.lon! >= 0 ? "E" : "W";
+
+    int status = data.gnssState ?? 0;
+    if ((status < 1 || status > 5) && data.fusionState == 5) {
+      status = 6; // 纯惯导推算 (Dead Reckoning)
+    } else if (status == 0) {
+      status = 6; // 兜底处理
     }
 
-    _serialSubscription = _serialService.lineStream.listen((line) {
-      if (line.startsWith("\$GNGGA")) {
+    int sats = 12;
+    String hdop = "1.0";
+    String alt = (data.alt ?? 0.0).toStringAsFixed(3);
+
+    String core =
+        "GNGGA,$timeStr,$latStr,$nsStr,$lonStr,$ewStr,$status,$sats,$hdop,$alt,M,0.0,M,,";
+
+    int checksum = 0;
+    for (int i = 0; i < core.length; i++) {
+      checksum ^= core.codeUnitAt(i);
+    }
+    String chkStr = checksum.toRadixString(16).toUpperCase().padLeft(2, '0');
+
+    return "\$$core*$chkStr\r\n";
+  }
+
+  void _startForwardingGNGGA() {
+    _serialSubscription?.cancel();
+
+    if (_ggaSourcePort == "从IMU解析") {
+      String lastSentTime = "";
+      _serialSubscription = ImuDataParser.imuDataStream.listen((data) {
+        if (data.lat != null &&
+            data.lon != null &&
+            data.lat! != 0 &&
+            data.lon! != 0) {
+          // 只发送整秒
+          if (data.utcMsec != null && data.utcMsec! % 1000 == 0) {
+            String timeStr = "${data.utcHour}${data.utcMin}${data.utcSec}";
+            if (timeStr != lastSentTime) {
+              lastSentTime = timeStr;
+              String gga = _generateGga(data);
+              _ntripService.sendGNGGA(gga);
+            }
+          }
+        }
+      });
+      _addLog("开始监听 IMU 解码出的位置数据并上传 GGA ...");
+      return;
+    }
+
+    if (_ggaSerialService == null || !_ggaSerialService!.isOpen) {
+      _addLog("警告: GGA来源串口未打开，无法获取 GNGGA 数据");
+      return;
+    }
+
+    String lastSentTime = "";
+
+    _serialSubscription = _ggaSerialService!.lineStream.listen((line) {
+      if (line.startsWith("\$GNGGA") || line.startsWith("\$GPGGA")) {
         if (line.contains("*")) {
-          _ntripService.sendGNGGA(line);
+          List<String> parts = line.split(',');
+          if (parts.length > 1) {
+            String timeStr = parts[1];
+            // 只发送整秒，并且避免同一秒内发送多次（比如同时收到 GPGGA 和 GNGGA）
+            if (timeStr.isNotEmpty &&
+                timeStr != lastSentTime &&
+                (!timeStr.contains('.') ||
+                    RegExp(r'\.0+$').hasMatch(timeStr))) {
+              lastSentTime = timeStr;
+              _ntripService.sendGNGGA(line);
+            }
+          }
         }
       }
     });
@@ -357,6 +493,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                             '103.143.19.54', // Sixents
                             'rtk.huacenav.com', // CHCNAV
                             '140.143.212.42', // Tencent Cloud / Others
+                            'ntrip.gnsslab.cn', // IGS WHU
                           ].map((String choice) {
                             return PopupMenuItem<String>(
                               value: choice,
@@ -515,6 +652,88 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                     ),
                     child: const Text('获取列表', style: TextStyle(fontSize: 13)),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Expanded(
+                  flex: 2,
+                  child: DropdownButtonFormField<String>(
+                    initialValue:
+                        [
+                          '主串口',
+                          '从IMU解析',
+                          ..._availablePorts,
+                        ].contains(_ggaSourcePort)
+                        ? _ggaSourcePort
+                        : '主串口',
+                    style: const TextStyle(fontSize: 14, color: Colors.black),
+                    decoration: const InputDecoration(
+                      labelText: 'GGA来源串口',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 8,
+                      ),
+                    ),
+                    items: {'主串口', '从IMU解析', ..._availablePorts}.map((port) {
+                      return DropdownMenuItem(
+                        value: port,
+                        child: Text(
+                          port,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            color: Colors.black,
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                    onChanged: (value) {
+                      setState(() {
+                        _ggaSourcePort = value!;
+                      });
+                    },
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Expanded(
+                  flex: 1,
+                  child: DropdownButtonFormField<int>(
+                    initialValue: _ggaSourceBaudRate,
+                    style: const TextStyle(fontSize: 14, color: Colors.black),
+                    decoration: const InputDecoration(
+                      labelText: '波特率',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 8,
+                      ),
+                    ),
+                    items: _baudRates.map((rate) {
+                      return DropdownMenuItem(
+                        value: rate,
+                        child: Text(
+                          rate.toString(),
+                          style: const TextStyle(
+                            fontSize: 14,
+                            color: Colors.black,
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                    onChanged:
+                        (_ggaSourcePort == '主串口' || _ggaSourcePort == '从IMU解析')
+                        ? null
+                        : (value) {
+                            setState(() {
+                              _ggaSourceBaudRate = value!;
+                            });
+                          },
                   ),
                 ),
               ],
@@ -808,7 +1027,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                 border: Border.all(color: Colors.white, width: 1.5),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.2),
+                    color: Colors.black.withValues(alpha: 0.2),
                     blurRadius: 2,
                     offset: const Offset(0, 1),
                   ),

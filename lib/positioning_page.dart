@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'serial_service.dart';
+import 'imu_data_parser.dart';
 
 class MobilePositioningPage extends StatefulWidget {
   final VoidCallback onOpenDrawer;
@@ -18,8 +19,10 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   final MapController _mapController = MapController();
   final List<PositionHistoryPoint> _points = [];
   StreamSubscription<String>? _subscription;
+  StreamSubscription<ImuData>? _imuSubscription;
   bool _autoCenter = true;
   PositionInfo? _currentInfo;
+  ImuData? _currentImuInfo;
 
   // Gaode Map Tile URL (Standard/Vector implementation)
   final String _amapUrl =
@@ -30,13 +33,54 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     super.initState();
     // Subscribe to the serial service line stream
     _subscription = SerialService().lineStream.listen(_handleLine);
+    _imuSubscription = ImuDataParser.imuDataStream.listen(_handleImuData);
   }
 
   @override
   void dispose() {
     _subscription?.cancel();
+    _imuSubscription?.cancel();
     _mapController.dispose();
     super.dispose();
+  }
+
+  int _getEffectiveImuStatus(ImuData data) {
+    int status = data.gnssState ?? 0;
+    if ((status < 1 || status > 5) && data.fusionState == 5) {
+      return 6;
+    }
+    return status;
+  }
+
+  void _handleImuData(ImuData data) {
+    if (data.utcMsec != null && data.utcMsec! % 1000 == 0) {
+      if (data.lat != null &&
+          data.lon != null &&
+          data.lat! != 0 &&
+          data.lon! != 0) {
+        final gcj02Pos = CoordinateConverter.wgs84ToGcj02(data.lat!, data.lon!);
+
+        final int status = _getEffectiveImuStatus(data);
+        final point = PositionHistoryPoint(
+          location: gcj02Pos,
+          status: status,
+          isImu: true,
+        );
+
+        setState(() {
+          _currentImuInfo = data;
+          _currentInfo = null;
+          _points.add(point);
+          if (_points.length > 5000) {
+            _points.removeAt(0);
+          }
+        });
+
+        if (_autoCenter) {
+          _mapController.move(gcj02Pos, _mapController.camera.zoom);
+        }
+      }
+    }
   }
 
   void _handleLine(String line) {
@@ -106,10 +150,15 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         dop3: dop3,
       );
 
-      final point = PositionHistoryPoint(location: gcj02Pos, status: status);
+      final point = PositionHistoryPoint(
+        location: gcj02Pos,
+        status: status,
+        isImu: false,
+      );
 
       setState(() {
         _currentInfo = newInfo;
+        _currentImuInfo = null;
         _points.add(point);
         // Keep a reasonable buffer if needed, e.g., last 10000 points
         if (_points.length > 5000) {
@@ -125,29 +174,63 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     }
   }
 
-  Color _getColorForStatus(int status) {
-    switch (status) {
-      case 3: // SPP
-        return Colors.pink;
-      case 4: // PPP
-        return Colors.blue;
-      case 5: // Prediction
-        return Colors.red;
-      default:
-        return Colors.grey;
+  Color _getColorForStatus(int status, bool isImu) {
+    if (isImu) {
+      switch (status) {
+        case 1:
+          return Colors.red; // SPP
+        case 2:
+          return Colors.pink; // DGPS
+        case 4:
+          return Colors.orange; // RTK FIX
+        case 5:
+          return Colors.green; // RTK FLOAT
+        case 6:
+          return Colors.blue; // DR (纯惯导推算)
+        default:
+          return Colors.grey;
+      }
+    } else {
+      switch (status) {
+        case 3: // SPP
+          return Colors.pink;
+        case 4: // PPP
+          return Colors.blue;
+        case 5: // Prediction
+          return Colors.red;
+        default:
+          return Colors.grey;
+      }
     }
   }
 
-  String _getStatusText(int status) {
-    switch (status) {
-      case 3:
-        return "SPP (3)";
-      case 4:
-        return "PPP (4)";
-      case 5:
-        return "PRED (5)";
-      default:
-        return "UNKNOWN ($status)";
+  String _getStatusText(int status, bool isImu) {
+    if (isImu) {
+      switch (status) {
+        case 1:
+          return "SPP (1)";
+        case 2:
+          return "DGPS (2)";
+        case 4:
+          return "RTK FIX (4)";
+        case 5:
+          return "RTK FLOAT (5)";
+        case 6:
+          return "DR (6)";
+        default:
+          return "UNKNOWN ($status)";
+      }
+    } else {
+      switch (status) {
+        case 3:
+          return "SPP (3)";
+        case 4:
+          return "PPP (4)";
+        case 5:
+          return "PRED (5)";
+        default:
+          return "UNKNOWN ($status)";
+      }
     }
   }
 
@@ -155,6 +238,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     setState(() {
       _points.clear();
       _currentInfo = null;
+      _currentImuInfo = null;
     });
   }
 
@@ -221,7 +305,10 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                     .map(
                       (p) => CircleMarker(
                         point: p.location,
-                        color: _getColorForStatus(p.status).withOpacity(0.8),
+                        color: _getColorForStatus(
+                          p.status,
+                          p.isImu,
+                        ).withValues(alpha: 0.8),
                         borderStrokeWidth: 0.5,
                         borderColor: Colors.white,
                         radius: 2, // visible size
@@ -239,7 +326,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
               child: Container(
                 padding: const EdgeInsets.all(8.0),
                 decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.6),
+                  color: Colors.black.withValues(alpha: 0.6),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Column(
@@ -257,9 +344,12 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                           style: TextStyle(color: Colors.white, fontSize: 12),
                         ),
                         Text(
-                          _getStatusText(_currentInfo!.status),
+                          _getStatusText(_currentInfo!.status, false),
                           style: TextStyle(
-                            color: _getColorForStatus(_currentInfo!.status),
+                            color: _getColorForStatus(
+                              _currentInfo!.status,
+                              false,
+                            ),
                             fontSize: 12,
                             fontWeight: FontWeight.bold,
                           ),
@@ -284,6 +374,67 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                     const SizedBox(height: 2),
                     Text(
                       "DOP: ${_currentInfo!.dop1.toStringAsFixed(2)} / ${_currentInfo!.dop2.toStringAsFixed(2)} / ${_currentInfo!.dop3.toStringAsFixed(2)}",
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          if (_currentImuInfo != null)
+            Positioned(
+              top: 10,
+              left: 10,
+              child: Container(
+                padding: const EdgeInsets.all(8.0),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.6),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      "UTC: ${_currentImuInfo!.utcHour?.toString().padLeft(2, '0')}:${_currentImuInfo!.utcMin?.toString().padLeft(2, '0')}:${_currentImuInfo!.utcSec?.toString().padLeft(2, '0')}.${_currentImuInfo!.utcMsec?.toString().padLeft(3, '0')}",
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        const Text(
+                          "GNSS/Fusion: ",
+                          style: TextStyle(color: Colors.white, fontSize: 12),
+                        ),
+                        Text(
+                          "${_currentImuInfo!.gnssState} / ${_currentImuInfo!.fusionState} (${_getStatusText(_getEffectiveImuStatus(_currentImuInfo!), true).replaceAll('\n', ' ')})",
+                          style: TextStyle(
+                            color: _getColorForStatus(
+                              _getEffectiveImuStatus(_currentImuInfo!),
+                              true,
+                            ),
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      "Speed: ${sqrt((_currentImuInfo!.ve ?? 0) * (_currentImuInfo!.ve ?? 0) + (_currentImuInfo!.vn ?? 0) * (_currentImuInfo!.vn ?? 0) + (_currentImuInfo!.vu ?? 0) * (_currentImuInfo!.vu ?? 0)).toStringAsFixed(3)} m/s",
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      "Euler: ${_currentImuInfo!.pitch?.toStringAsFixed(2)}, ${_currentImuInfo!.roll?.toStringAsFixed(2)}, ${_currentImuInfo!.yaw?.toStringAsFixed(2)}",
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      "Acc: ${_currentImuInfo!.ax?.toStringAsFixed(3)}, ${_currentImuInfo!.ay?.toStringAsFixed(3)}, ${_currentImuInfo!.az?.toStringAsFixed(3)}",
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      "Gyro: ${_currentImuInfo!.wx?.toStringAsFixed(3)}, ${_currentImuInfo!.wy?.toStringAsFixed(3)}, ${_currentImuInfo!.wz?.toStringAsFixed(3)}",
                       style: const TextStyle(color: Colors.white, fontSize: 12),
                     ),
                   ],
@@ -372,6 +523,11 @@ class CoordinateConverter {
 class PositionHistoryPoint {
   final LatLng location;
   final int status;
+  final bool isImu;
 
-  PositionHistoryPoint({required this.location, required this.status});
+  PositionHistoryPoint({
+    required this.location,
+    required this.status,
+    this.isImu = false,
+  });
 }

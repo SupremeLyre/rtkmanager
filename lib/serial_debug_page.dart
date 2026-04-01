@@ -8,6 +8,7 @@ import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'serial_service.dart';
 import 'ntrip_service.dart';
+import 'imu_data_parser.dart';
 
 class SerialDebugPage extends StatefulWidget {
   final VoidCallback? onOpenDrawer;
@@ -165,7 +166,7 @@ class _SerialDebugPageState extends State<SerialDebugPage>
                 border: Border.all(color: Colors.white, width: 1.5),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.2),
+                    color: Colors.black.withValues(alpha: 0.2),
                     blurRadius: 2,
                     offset: const Offset(0, 1),
                   ),
@@ -271,19 +272,19 @@ class SerialDebugContentState extends State<SerialDebugContent>
   bool _rtsEnabled = false;
   bool _dtrEnabled = false;
   bool _addCRLF = false;
+  bool _hexDisplayMode = false;
+  bool _parseIMU = false;
   bool _isSavingToFile = false;
   bool _isGlobalOverride = false;
   IOSink? _fileSink;
-  String? _currentSaveFilePath;
+
+  final ImuDataParser _imuParser = ImuDataParser();
 
   StreamSubscription? _lineSubscription;
   StreamSubscription? _rawSubscription;
 
   final List<String> _receivedData = [];
   String _incompleteLine = "";
-  // 临时缓存，用于降低 UI 刷新频率
-  final List<String> _tempBuffer = [];
-  Timer? _uiUpdateTimer;
 
   final TextEditingController _sendController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
@@ -307,40 +308,45 @@ class SerialDebugContentState extends State<SerialDebugContent>
     super.initState();
     _refreshPorts();
     _subscribeToStream();
+  }
 
-    // 启动定时器，每 200ms 刷新一次 UI，避免高频 setState 导致卡顿或显示异常
-    _uiUpdateTimer = Timer.periodic(const Duration(milliseconds: 200), (timer) {
-      if (_tempBuffer.isNotEmpty && mounted) {
-        setState(() {
-          // 将这一段时间内收到的所有碎片拼接成一个完整的字符串块
-          String combinedText = _tempBuffer.join("");
-          _tempBuffer.clear();
+  void _processIncomingData(String incomingText) {
+    if (!mounted) return;
+    setState(() {
+      _incompleteLine += incomingText;
 
-          _incompleteLine += combinedText;
-
-          // Split into lines
-          int index;
-          while ((index = _incompleteLine.indexOf('\n')) != -1) {
-            String line = _incompleteLine.substring(0, index);
-            if (line.endsWith('\r')) {
-              line = line.substring(0, line.length - 1);
-            }
-            _receivedData.add(line);
-            _incompleteLine = _incompleteLine.substring(index + 1);
+      // Split into lines
+      int maxLineLength = (_hexDisplayMode && !_parseIMU)
+          ? 90
+          : 10240; // 在 HEX 模式且不解析IMU时，每 30 个字节(约90字符)强制折行以防无换行符卡死
+      int index;
+      while (true) {
+        index = _incompleteLine.indexOf('\n');
+        if (index != -1 && index <= maxLineLength) {
+          String line = _incompleteLine.substring(0, index);
+          if (line.endsWith('\r')) {
+            line = line.substring(0, line.length - 1);
           }
+          _receivedData.add(line);
+          _incompleteLine = _incompleteLine.substring(index + 1);
+        } else if (_incompleteLine.length > maxLineLength) {
+          // 强制折行
+          String line = _incompleteLine.substring(0, maxLineLength);
+          _receivedData.add(line);
+          _incompleteLine = _incompleteLine.substring(maxLineLength);
+        } else {
+          break;
+        }
+      }
 
-          // Limit buffer size to save memory on Raspberry Pi
-          if (_receivedData.length > 1000) {
-            _receivedData.removeRange(0, _receivedData.length - 1000);
-          }
-        });
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (_scrollController.hasClients) {
-            _scrollController.jumpTo(
-              _scrollController.position.maxScrollExtent,
-            );
-          }
-        });
+      // Limit buffer size to save memory on Raspberry Pi
+      if (_receivedData.length > 1000) {
+        _receivedData.removeRange(0, _receivedData.length - 1000);
+      }
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
       }
     });
   }
@@ -356,30 +362,47 @@ class SerialDebugContentState extends State<SerialDebugContent>
   }
 
   void _subscribeToStream() {
-    // 1. 监听原始数据流用于文件保存 (Raw Data)
-    // 这样可以保证保存到文件的数据是原汁原味的，不受编码转换和换行处理的影响
-    _rawSubscription = widget.serialService.dataStream.listen((data) {
-      if (_isSavingToFile && _fileSink != null) {
-        try {
-          _fileSink!.add(data);
-        } catch (e) {
-          // Ignore write errors or handle them
+    // 2. 监听原始数据并按模式统一解码显示
+    _rawSubscription = widget.serialService.dataStream.listen(
+      (data) {
+        if (_isSavingToFile && _fileSink != null) {
+          try {
+            _fileSink!.add(data);
+          } catch (e) {
+            // Ignore write errors or handle them
+          }
         }
-      }
-    });
 
-    // 2. 监听处理后的文本流用于 UI 显示 (Raw Text Chunks)
-    // 使用 textStream 而不是 lineStream，避免人为分行
-    _lineSubscription = widget.serialService.textStream.listen(
-      (text) {
         if (mounted) {
-          // 将数据添加到临时缓存，由定时器统一刷新
-          _tempBuffer.add(text);
+          if (_hexDisplayMode && _parseIMU) {
+            _imuParser.parseData(data, (imuData) {
+              if (mounted) {
+                _processIncomingData('$imuData\n');
+              }
+            });
+          } else {
+            String text;
+            if (_hexDisplayMode) {
+              // 二进制按 HEX 格式显示，使用 StringBuffer 提高大量数据时的拼接性能
+              StringBuffer buffer = StringBuffer();
+              for (int i = 0; i < data.length; i++) {
+                buffer.write(
+                  data[i].toRadixString(16).padLeft(2, '0').toUpperCase(),
+                );
+                buffer.write(' ');
+              }
+              text = buffer.toString();
+            } else {
+              // 统一按照字符处理，保持原汁原味的字符表现，非法 UTF-8 序列保留为乱码占位符
+              text = utf8.decode(data, allowMalformed: true);
+            }
+            _processIncomingData(text);
+          }
         }
       },
       onError: (error) {
         if (mounted) {
-          _showError("串口异常断开: $error");
+          _showError("数据接收异常: $error");
           setState(() {});
         }
       },
@@ -414,7 +437,6 @@ class SerialDebugContentState extends State<SerialDebugContent>
       setState(() {
         _isSavingToFile = false;
         _fileSink = null;
-        _currentSaveFilePath = null;
       });
       if (mounted) {
         ScaffoldMessenger.of(
@@ -453,7 +475,6 @@ class SerialDebugContentState extends State<SerialDebugContent>
 
         setState(() {
           _isSavingToFile = true;
-          _currentSaveFilePath = filePath;
         });
 
         if (mounted) {
@@ -540,7 +561,7 @@ class SerialDebugContentState extends State<SerialDebugContent>
           _incompleteLine = "";
         }
         _receivedData.add("[发送] $textToSend");
-        _sendController.clear();
+        // 已移除 _sendController.clear() 实现多次重发相同命令的需求
       });
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (_scrollController.hasClients) {
@@ -567,7 +588,6 @@ class SerialDebugContentState extends State<SerialDebugContent>
 
   @override
   void dispose() {
-    _uiUpdateTimer?.cancel();
     _lineSubscription?.cancel();
     _rawSubscription?.cancel();
     _fileSink?.close();
@@ -774,6 +794,51 @@ class SerialDebugContentState extends State<SerialDebugContent>
                                       ],
                                     ),
                                   ),
+                                  const SizedBox(width: 8),
+                                  SizedBox(
+                                    height: 24,
+                                    child: Row(
+                                      children: [
+                                        Checkbox(
+                                          value: _hexDisplayMode,
+                                          onChanged: (value) {
+                                            setState(() {
+                                              _hexDisplayMode = value ?? false;
+                                              if (!_hexDisplayMode) {
+                                                _parseIMU = false;
+                                              }
+                                            });
+                                          },
+                                        ),
+                                        const Text(
+                                          "HEX",
+                                          style: TextStyle(fontSize: 12),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  if (_hexDisplayMode) ...[
+                                    const SizedBox(width: 8),
+                                    SizedBox(
+                                      height: 24,
+                                      child: Row(
+                                        children: [
+                                          Checkbox(
+                                            value: _parseIMU,
+                                            onChanged: (value) {
+                                              setState(() {
+                                                _parseIMU = value ?? false;
+                                              });
+                                            },
+                                          ),
+                                          const Text(
+                                            "解析IMU",
+                                            style: TextStyle(fontSize: 12),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
                                 ],
                               ),
                               const SizedBox(height: 4),
@@ -832,6 +897,29 @@ class SerialDebugContentState extends State<SerialDebugContent>
                                       },
                               ),
                               const Text("DTR"),
+                              const SizedBox(width: 10),
+                              Checkbox(
+                                value: _hexDisplayMode,
+                                onChanged: (value) {
+                                  setState(() {
+                                    _hexDisplayMode = value ?? false;
+                                    if (!_hexDisplayMode) _parseIMU = false;
+                                  });
+                                },
+                              ),
+                              const Text("HEX"),
+                              if (_hexDisplayMode) ...[
+                                const SizedBox(width: 10),
+                                Checkbox(
+                                  value: _parseIMU,
+                                  onChanged: (value) {
+                                    setState(() {
+                                      _parseIMU = value ?? false;
+                                    });
+                                  },
+                                ),
+                                const Text("解析IMU"),
+                              ],
                               const Spacer(),
                               ElevatedButton.icon(
                                 onPressed: _selectedPort == null

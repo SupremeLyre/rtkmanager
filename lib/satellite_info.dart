@@ -137,8 +137,9 @@ class GsvSentence {
     if (header.contains('GL')) return SatelliteSystem.glonass;
     if (header.contains('GP')) return SatelliteSystem.gps;
     if (header.contains('GA')) return SatelliteSystem.galileo;
-    if (header.contains('GB') || header.contains('BD'))
+    if (header.contains('GB') || header.contains('BD')) {
       return SatelliteSystem.beidou; // GB/BD commonly used for BeiDou
+    }
     if (header.contains('GI')) return SatelliteSystem.navic; // NavIC
     if (header.contains('GQ')) return SatelliteSystem.qzss; // QZSS
     if (header.contains('GN')) return SatelliteSystem.unknown;
@@ -261,8 +262,10 @@ class SatelliteService extends ChangeNotifier {
 
     // 遍历所有系统的所有信号数据进行合并
     for (var system in SatelliteSystem.values) {
-      if (system == SatelliteSystem.unknown || !_signalData.containsKey(system))
+      if (system == SatelliteSystem.unknown ||
+          !_signalData.containsKey(system)) {
         continue;
+      }
 
       final systemSignals = _signalData[system]!;
       if (systemSignals.isEmpty) {

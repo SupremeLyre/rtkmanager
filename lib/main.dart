@@ -84,14 +84,93 @@ class WindowTitleBar extends StatelessWidget {
   }
 }
 
-class WindowButtons extends StatefulWidget {
+class WindowButtons extends StatelessWidget {
   const WindowButtons({super.key});
 
   @override
-  State<WindowButtons> createState() => _WindowButtonsState();
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        _CircleButton(
+          color: const Color(0xFFFF5F56), // Red - Close
+          icon: Icons.close,
+          onTap: () => appWindow.close(),
+        ),
+        const SizedBox(width: 8),
+        _CircleButton(
+          color: const Color(0xFFFFBD2E), // Yellow - Minimize
+          icon: Icons.remove,
+          onTap: () => appWindow.minimize(),
+        ),
+        const SizedBox(width: 8),
+        _CircleButton(
+          color: const Color(0xFF27C93F), // Green - Maximize/Restore
+          customIcon: CustomPaint(
+            size: const Size(8, 8),
+            painter: _MacMaximizeIconPainter(
+              color: const Color(0xFF4D0000).withValues(alpha: 0.6),
+            ),
+          ),
+          onTap: () => appWindow.maximizeOrRestore(),
+        ),
+      ],
+    );
+  }
 }
 
-class _WindowButtonsState extends State<WindowButtons> {
+class _MacMaximizeIconPainter extends CustomPainter {
+  final Color color;
+
+  _MacMaximizeIconPainter({required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
+
+    // 左上角三角形
+    final path1 = Path()
+      ..moveTo(0, 0)
+      ..lineTo(4, 0)
+      ..lineTo(0, 4)
+      ..close();
+
+    // 右下角三角形
+    final path2 = Path()
+      ..moveTo(size.width, size.height)
+      ..lineTo(size.width - 4, size.height)
+      ..lineTo(size.width, size.height - 4)
+      ..close();
+
+    canvas.drawPath(path1, paint);
+    canvas.drawPath(path2, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _MacMaximizeIconPainter oldDelegate) {
+    return oldDelegate.color != color;
+  }
+}
+
+class _CircleButton extends StatefulWidget {
+  final Color color;
+  final IconData? icon;
+  final Widget? customIcon;
+  final VoidCallback onTap;
+
+  const _CircleButton({
+    required this.color,
+    this.icon,
+    this.customIcon,
+    required this.onTap,
+  });
+
+  @override
+  State<_CircleButton> createState() => _CircleButtonState();
+}
+
+class _CircleButtonState extends State<_CircleButton> {
   bool _isHovering = false;
 
   @override
@@ -99,52 +178,29 @@ class _WindowButtonsState extends State<WindowButtons> {
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovering = true),
       onExit: (_) => setState(() => _isHovering = false),
-      child: Row(
-        children: [
-          _buildCircleButton(
-            color: const Color(0xFFFF5F56), // Red - Close
-            icon: Icons.close,
-            onTap: () => appWindow.close(),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(
+            color: widget.color,
+            shape: BoxShape.circle,
           ),
-          const SizedBox(width: 8),
-          _buildCircleButton(
-            color: const Color(0xFFFFBD2E), // Yellow - Minimize
-            icon: Icons.remove,
-            onTap: () => appWindow.minimize(),
-          ),
-          const SizedBox(width: 8),
-          _buildCircleButton(
-            color: const Color(0xFF27C93F), // Green - Maximize/Restore
-            icon: Icons.add,
-            onTap: () => appWindow.maximizeOrRestore(),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCircleButton({
-    required Color color,
-    required IconData icon,
-    required VoidCallback onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 12,
-        height: 12,
-        decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
+          alignment: Alignment.center,
+          child: _isHovering
+              ? (widget.customIcon ??
+                    (widget.icon != null
+                        ? Icon(
+                            widget.icon,
+                            size: 9,
+                            color: const Color(
+                              0xFF4D0000,
+                            ).withValues(alpha: 0.6),
+                          )
+                        : null))
+              : null,
         ),
-        alignment: Alignment.center,
-        child: _isHovering
-            ? Icon(
-                icon,
-                size: 9,
-                color: const Color(0xFF4D0000).withOpacity(0.6),
-              )
-            : null,
       ),
     );
   }
