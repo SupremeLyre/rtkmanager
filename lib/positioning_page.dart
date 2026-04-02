@@ -184,7 +184,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         case 4:
           return Colors.green; // RTK FIX
         case 5:
-          return Colors.orange; // RTK FLOAT
+          return Colors.brown; // RTK FLOAT
         case 6:
           return Colors.blue; // DR (纯惯导推算)
         default:
