@@ -87,7 +87,11 @@ class ImuDataParser {
   final List<int> _buffer = [];
 
   /// 推入字节数据并尝试解析出完整帧。成功时调用 [onParsed] 回调。
-  void parseData(List<int> data, void Function(ImuData) onParsed) {
+  void parseData(
+    List<int> data,
+    void Function(ImuData) onParsed, {
+    bool broadcast = true,
+  }) {
     _buffer.addAll(data);
 
     // 最小帧长度: 帧头(2) + TID(2) + LEN(1) + CK1,CK2(2) = 7 bytes
@@ -233,7 +237,9 @@ class ImuDataParser {
         }
 
         onParsed(imuData); // 抛出有效帧结构
-        _imuDataStreamController.add(imuData); // 发布到全局广播流
+        if (broadcast) {
+          _imuDataStreamController.add(imuData); // 发布到全局广播流
+        }
         _buffer.removeRange(0, i + frameTotalLen); // 清理当前成功解析过的数据
       } else {
         // 校验失败！可能这一处 0x59 0x53 是伪造的数据段（比如正巧数据中有这两字节），安全起见剥离第一个 0x59 然后重新匹配后面的头

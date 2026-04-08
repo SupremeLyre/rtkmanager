@@ -1,8 +1,10 @@
+import 'dart:io';
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:file_picker/file_picker.dart';
 import 'serial_service.dart';
 import 'imu_data_parser.dart';
 
@@ -234,6 +236,98 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     }
   }
 
+  Future<void> _importFile() async {
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles();
+
+      if (result != null && result.files.single.path != null) {
+        File file = File(result.files.single.path!);
+
+        setState(() {
+          _points.clear();
+          _autoCenter = false; // Disable auto center during bulk import
+          _currentInfo = null;
+        });
+
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('正在读取和解析文件，请稍候...')));
+        }
+
+        final parser = ImuDataParser();
+        List<PositionHistoryPoint> newPoints = [];
+        ImuData? lastData;
+        int? lastSec;
+
+        int lastYieldTime = DateTime.now().millisecondsSinceEpoch;
+
+        // Parse chunk by chunk to avoid out of memory and UI freeze
+        await for (final chunk in file.openRead()) {
+          parser.parseData(chunk, (data) {
+            if (data.utcSec != null && data.utcSec != lastSec) {
+              if (data.lat != null &&
+                  data.lon != null &&
+                  data.lat! != 0 &&
+                  data.lon! != 0) {
+                lastSec = data.utcSec;
+
+                final gcj02Pos = CoordinateConverter.wgs84ToGcj02(
+                  data.lat!,
+                  data.lon!,
+                );
+
+                final int status = _getEffectiveImuStatus(data);
+                final point = PositionHistoryPoint(
+                  location: gcj02Pos,
+                  status: status,
+                  isImu: true,
+                );
+
+                newPoints.add(point);
+                lastData = data;
+              }
+            }
+          }, broadcast: false);
+
+          // Yield control to UI thread every 20ms to prevent freezing
+          final now = DateTime.now().millisecondsSinceEpoch;
+          if (now - lastYieldTime > 20) {
+            await Future.delayed(Duration.zero);
+            lastYieldTime = now;
+          }
+        }
+
+        setState(() {
+          _points.addAll(newPoints);
+          if (_points.length > 50000) {
+            // Keep more points for imported files
+            _points.removeRange(0, _points.length - 50000);
+          }
+          if (lastData != null) {
+            _currentImuInfo = lastData;
+          }
+        });
+
+        if (_points.isNotEmpty) {
+          _mapController.move(
+            _points.first.location,
+            _mapController.camera.zoom,
+          );
+        }
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).hideCurrentSnackBar();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('文件解析完成，共载入 ${newPoints.length} 个轨迹点')),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('Error importing file: $e');
+    }
+  }
+
   void _clearPoints() {
     setState(() {
       _points.clear();
@@ -259,6 +353,14 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.file_open),
+            iconSize: 20,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            tooltip: '从文件导入IMU定位数据',
+            onPressed: _importFile,
+          ),
           IconButton(
             icon: Icon(
               _autoCenter ? Icons.center_focus_strong : Icons.center_focus_weak,
