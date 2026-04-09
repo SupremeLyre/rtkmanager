@@ -23,8 +23,11 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   StreamSubscription<String>? _subscription;
   StreamSubscription<ImuData>? _imuSubscription;
   bool _autoCenter = true;
+  bool _showTimeline = true;
+  bool _isImportMode = false;
   PositionInfo? _currentInfo;
   ImuData? _currentImuInfo;
+  int? _selectedIndex;
 
   // Gaode Map Tile URL (Standard/Vector implementation)
   final String _amapUrl =
@@ -67,18 +70,22 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           location: gcj02Pos,
           status: status,
           isImu: true,
+          imuData: data,
         );
 
         setState(() {
           _currentImuInfo = data;
           _currentInfo = null;
           _points.add(point);
-          if (_points.length > 5000) {
-            _points.removeAt(0);
+          if (_selectedIndex == null) {
+            // Only auto scroll if we are tracking latest
+            if (_points.length > 5000) {
+              _points.removeAt(0);
+            }
           }
         });
 
-        if (_autoCenter) {
+        if (_autoCenter && _selectedIndex == null) {
           _mapController.move(gcj02Pos, _mapController.camera.zoom);
         }
       }
@@ -156,19 +163,22 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         location: gcj02Pos,
         status: status,
         isImu: false,
+        posInfo: newInfo,
       );
 
       setState(() {
-        _currentInfo = newInfo;
-        _currentImuInfo = null;
+        if (_selectedIndex == null) {
+          _currentInfo = newInfo;
+          _currentImuInfo = null;
+        }
         _points.add(point);
         // Keep a reasonable buffer if needed, e.g., last 10000 points
-        if (_points.length > 5000) {
+        if (_selectedIndex == null && _points.length > 5000) {
           _points.removeAt(0);
         }
       });
 
-      if (_autoCenter) {
+      if (_autoCenter && _selectedIndex == null) {
         _mapController.move(gcj02Pos, _mapController.camera.zoom);
       }
     } catch (e) {
@@ -247,6 +257,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           _points.clear();
           _autoCenter = false; // Disable auto center during bulk import
           _currentInfo = null;
+          _selectedIndex = null;
+          _isImportMode = true;
         });
 
         if (mounted) {
@@ -282,6 +294,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                   location: gcj02Pos,
                   status: status,
                   isImu: true,
+                  imuData: data,
                 );
 
                 newPoints.add(point);
@@ -333,6 +346,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
       _points.clear();
       _currentInfo = null;
       _currentImuInfo = null;
+      _selectedIndex = null;
+      _isImportMode = false;
     });
   }
 
@@ -375,6 +390,19 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
               });
             },
           ),
+          if (_isImportMode)
+            IconButton(
+              icon: Icon(_showTimeline ? Icons.timeline : Icons.linear_scale),
+              iconSize: 20,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              tooltip: _showTimeline ? '隐藏时间轴' : '显示时间轴',
+              onPressed: () {
+                setState(() {
+                  _showTimeline = !_showTimeline;
+                });
+              },
+            ),
           IconButton(
             icon: const Icon(Icons.delete),
             iconSize: 20,
@@ -419,6 +447,19 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                     )
                     .toList(),
               ),
+              if (_points.isNotEmpty)
+                CircleLayer(
+                  circles: [
+                    CircleMarker(
+                      point: _points[_selectedIndex ?? (_points.length - 1)]
+                          .location,
+                      color: Colors.yellow.withValues(alpha: 0.8),
+                      borderStrokeWidth: 1.5,
+                      borderColor: Colors.black,
+                      radius: 6,
+                    ),
+                  ],
+                ),
             ],
           ),
           if (_currentInfo != null)
@@ -543,6 +584,98 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                 ),
               ),
             ),
+          if (_points.isNotEmpty && _showTimeline && _isImportMode)
+            Positioned(
+              bottom: 20,
+              left: 20,
+              right: 20,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.6),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: SliderTheme(
+                        data: SliderThemeData(
+                          trackHeight: 2.0,
+                          thumbShape: const RoundSliderThumbShape(
+                            enabledThumbRadius: 6.0,
+                          ),
+                          overlayShape: const RoundSliderOverlayShape(
+                            overlayRadius: 14.0,
+                          ),
+                        ),
+                        child: Slider(
+                          value: (_selectedIndex ?? (_points.length - 1))
+                              .toDouble(),
+                          min: 0,
+                          max: (_points.length <= 1
+                              ? 1.0
+                              : (_points.length - 1).toDouble()),
+                          onChanged: _points.length <= 1
+                              ? null
+                              : (value) {
+                                  setState(() {
+                                    _selectedIndex = value.toInt();
+                                    _autoCenter =
+                                        false; // Disable auto center when manually reviewing
+                                    final point = _points[_selectedIndex!];
+                                    _mapController.move(
+                                      point.location,
+                                      _mapController.camera.zoom,
+                                    );
+                                    if (point.isImu) {
+                                      _currentImuInfo = point.imuData;
+                                      _currentInfo = null;
+                                    } else {
+                                      _currentInfo = point.posInfo;
+                                      _currentImuInfo = null;
+                                    }
+                                  });
+                                },
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '${(_selectedIndex ?? (_points.length - 1)) + 1} / ${_points.length}',
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                    IconButton(
+                      icon: const Icon(
+                        Icons.skip_next,
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                      onPressed: () {
+                        setState(() {
+                          _selectedIndex = null;
+                          if (_points.isNotEmpty) {
+                            final point = _points.last;
+                            if (point.isImu) {
+                              _currentImuInfo = point.imuData;
+                              _currentInfo = null;
+                            } else {
+                              _currentInfo = point.posInfo;
+                              _currentImuInfo = null;
+                            }
+                            if (_autoCenter) {
+                              _mapController.move(
+                                point.location,
+                                _mapController.camera.zoom,
+                              );
+                            }
+                          }
+                        });
+                      },
+                      tooltip: '回到最新',
+                    ),
+                  ],
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -626,10 +759,14 @@ class PositionHistoryPoint {
   final LatLng location;
   final int status;
   final bool isImu;
+  final ImuData? imuData;
+  final PositionInfo? posInfo;
 
   PositionHistoryPoint({
     required this.location,
     required this.status,
     this.isImu = false,
+    this.imuData,
+    this.posInfo,
   });
 }
