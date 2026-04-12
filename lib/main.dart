@@ -1,19 +1,35 @@
 import 'package:flutter/material.dart';
-import 'package:bitsdojo_window/bitsdojo_window.dart';
+import 'package:flutter/services.dart';
+import 'dart:io';
+import 'package:window_manager/window_manager.dart';
 import 'home_page.dart';
 
-void main() {
-  runApp(const MyApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
 
-  doWhenWindowReady(() {
-    final win = appWindow;
-    const initialSize = Size(800, 480);
-    win.minSize = const Size(400, 300);
-    win.size = initialSize;
-    win.alignment = Alignment.center;
-    win.title = "RTK Manager";
-    win.show();
-  });
+  // 在支持的桌面平台上初始化窗口管理器
+  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    try {
+      await windowManager.ensureInitialized();
+      const WindowOptions windowOptions = WindowOptions(
+        size: Size(800, 480),
+        minimumSize: Size(400, 300),
+        center: true,
+        backgroundColor: Colors.transparent,
+        skipTaskbar: false,
+        titleBarStyle: TitleBarStyle.hidden, // 隐藏原生系统标题栏
+      );
+      windowManager.waitUntilReadyToShow(windowOptions, () async {
+        await windowManager.show();
+        await windowManager.focus();
+      });
+    } catch (_) {
+      // 树莓派 (flutter-pi) 环境下没有对应原生插件实现，会抛出 MissingPluginException。
+      // 捕获并忽略，即可保证在树莓派上正常运行无窗口边缘的全屏界面。
+    }
+  }
+
+  runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
@@ -42,15 +58,29 @@ class CustomWindowFrame extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: WindowBorder(
-        color: Colors.transparent,
-        width: 0,
-        child: Column(
-          children: [
-            const WindowTitleBar(),
-            Expanded(child: child),
-          ],
-        ),
+      body: Column(
+        children: [
+          GestureDetector(
+            behavior: HitTestBehavior.opaque, // 铺满整个标题栏区域的点击/拖拽触发范围
+            onPanStart: (details) {
+              try {
+                windowManager.startDragging(); // 原生窗口拖拽API
+              } catch (_) {}
+            },
+            onDoubleTap: () async {
+              try {
+                bool isMaximized = await windowManager.isMaximized();
+                if (isMaximized) {
+                  await windowManager.unmaximize();
+                } else {
+                  await windowManager.maximize();
+                }
+              } catch (_) {}
+            },
+            child: const WindowTitleBar(),
+          ),
+          Expanded(child: child),
+        ],
       ),
     );
   }
@@ -68,16 +98,16 @@ class WindowTitleBar extends StatelessWidget {
         children: [
           const SizedBox(width: 8),
           const WindowButtons(),
-          Expanded(
-            child: MoveWindow(
-              child: const Center(
-                child: Text(
-                  "RTK Manager",
-                  style: TextStyle(fontSize: 12, color: Colors.black54),
-                ),
+          const Expanded(
+            child: Center(
+              child: Text(
+                "RTK Manager",
+                style: TextStyle(fontSize: 12, color: Colors.black54),
               ),
             ),
           ),
+          // 为了让标题居中，右边加一个占位
+          const SizedBox(width: 60),
         ],
       ),
     );
@@ -94,24 +124,42 @@ class WindowButtons extends StatelessWidget {
         _CircleButton(
           color: const Color(0xFFFF5F56), // Red - Close
           icon: Icons.close,
-          onTap: () => appWindow.close(),
+          onTap: () async {
+            try {
+              await windowManager.close(); // 尝试原生退出
+            } catch (_) {
+              SystemNavigator.pop(); // 失败（如树莓派端）降级为 Flutter 原生退出
+            }
+          },
         ),
         const SizedBox(width: 8),
         _CircleButton(
           color: const Color(0xFFFFBD2E), // Yellow - Minimize
           icon: Icons.remove,
-          onTap: () => appWindow.minimize(),
+          onTap: () async {
+            try {
+              await windowManager.minimize(); // 尝试原生最小化
+            } catch (_) {}
+          },
         ),
         const SizedBox(width: 8),
         _CircleButton(
-          color: const Color(0xFF27C93F), // Green - Maximize/Restore
+          color: const Color(0xFF27C93F), // Green - Maximize
           customIcon: CustomPaint(
             size: const Size(8, 8),
             painter: _MacMaximizeIconPainter(
               color: const Color(0xFF4D0000).withValues(alpha: 0.6),
             ),
           ),
-          onTap: () => appWindow.maximizeOrRestore(),
+          onTap: () async {
+            try {
+              if (await windowManager.isMaximized()) {
+                await windowManager.unmaximize();
+              } else {
+                await windowManager.maximize();
+              }
+            } catch (_) {}
+          },
         ),
       ],
     );
@@ -129,14 +177,12 @@ class _MacMaximizeIconPainter extends CustomPainter {
       ..color = color
       ..style = PaintingStyle.fill;
 
-    // 左上角三角形
     final path1 = Path()
       ..moveTo(0, 0)
       ..lineTo(4, 0)
       ..lineTo(0, 4)
       ..close();
 
-    // 右下角三角形
     final path2 = Path()
       ..moveTo(size.width, size.height)
       ..lineTo(size.width - 4, size.height)
@@ -148,9 +194,8 @@ class _MacMaximizeIconPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _MacMaximizeIconPainter oldDelegate) {
-    return oldDelegate.color != color;
-  }
+  bool shouldRepaint(covariant _MacMaximizeIconPainter oldDelegate) =>
+      oldDelegate.color != color;
 }
 
 class _CircleButton extends StatefulWidget {
@@ -190,18 +235,17 @@ class _CircleButtonState extends State<_CircleButton> {
           alignment: Alignment.center,
           child: _isHovering
               ? (widget.customIcon ??
-                    (widget.icon != null
-                        ? Icon(
-                            widget.icon,
-                            size: 9,
-                            color: const Color(
-                              0xFF4D0000,
-                            ).withValues(alpha: 0.6),
-                          )
-                        : null))
+                  (widget.icon != null
+                      ? Icon(
+                          widget.icon,
+                          size: 9,
+                          color: const Color(0xFF4D0000).withValues(alpha: 0.6),
+                        )
+                      : null))
               : null,
         ),
       ),
     );
   }
 }
+
