@@ -52,7 +52,7 @@ RTK Manager 是一个基于 Flutter 开发的跨平台应用程序，主要用�
 
 *   `flutter_libserialport`: 跨平台串口通信
 *   `flutter_map` & `latlong2`: 地图渲染与地理计算
-*   `bitsdojo_window`: 桌面端窗口定制
+*   `window_manager`: 桌面端窗口环境适配与定制（全面兼容 Linux 等）
 *   `file_picker`: 系统文件交互
 *   `path_provider`: 本地路径管理
 
@@ -67,14 +67,33 @@ RTK Manager 是一个基于 Flutter 开发的跨平台应用程序，主要用�
     ```bash
     flutter pub get
     ```
-4.  **运行项目**：
+4.  **运行项目（桌面端）**：
     ```bash
-    flutter run -d windows
+    flutter run -d windows  # 或 linux / macos
+    ```
+5.  **编译与部署（树莓派 flutter-pi 环境）**：
+    确保已全局激活 `flutterpi_tool`：
+    ```bash
+    flutter pub global activate flutterpi_tool
+    ```
+    在项目根目录进行编译（以 64 位 Raspberry Pi 3B+ 为例）：
+    ```bash
+    flutterpi_tool build --arch=arm64 --cpu=pi3 --release
+    ```
+    编译完成后，将生成的 `build/flutter-pi/pi3-64` 文件夹复制到树莓派中，在树莓派终端使用以下命令运行：
+    ```bash
+    flutter-pi /home/pi/rtkmanager_app/flutter-pi/pi3-64
     ```
 
 ## 注意事项
 
-*   **串口权限**：在 Linux/macOS 下运行可能需要对串口设备授予读写权限（如 `sudo chmod 777 /dev/ttyUSB0`）。
+*   **Flutter 版本兼容性**：截至 2026/4/13，`flutterpi_tool` 目前仅支持 Flutter 3.38 版本，尚未支持 3.41 版本，开发或编译时请注意使用兼容的 SDK 版本。
+*   **Linux 环境依赖**：在 Linux（包含树莓派 `flutter-pi`）环境下运行前，**必须先安装系统底层的串口驱动库**，否则运行会崩溃或提示 `failed to load dynamic library libserialport.so`。请运行以下命令安装：
+    ```bash
+    sudo apt-get update
+    sudo apt-get install libserialport0 libserialport-dev
+    ```
+*   **串口权限**：在 Linux 下由于硬件权限限制，普通用户无法直接读取串口。请将当前用户加入 `dialout` 组以获取永久读写权限（执行 `sudo usermod -a -G dialout $USER` 然后**重启系统生效**）。
 *   **地图加载**：地图瓦片加载依赖网络连接，请确保设备已连接互联网。
 
 ## 作者
