@@ -488,6 +488,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                         },
                         itemBuilder: (BuildContext context) {
                           return [
+                            '116.211.238.25', // whcs
                             '203.107.45.154', // Qianxun
                             'sdk.pnt.10086.cn', // CMCC
                             '103.143.19.54', // Sixents
