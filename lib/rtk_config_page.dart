@@ -671,7 +671,11 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                         ].contains(_ggaSourcePort)
                         ? _ggaSourcePort
                         : '主串口',
-                    style: const TextStyle(fontSize: 14, color: Colors.black),
+                    style: const TextStyle(
+                      fontSize: 14,
+                      color: Colors.black,
+                      fontFamily: 'SourceHanSansHWSC',
+                    ),
                     decoration: const InputDecoration(
                       labelText: 'GGA来源串口',
                       border: OutlineInputBorder(),
@@ -689,6 +693,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                           style: const TextStyle(
                             fontSize: 14,
                             color: Colors.black,
+                            fontFamily: 'SourceHanSansHWSC',
                           ),
                         ),
                       );
