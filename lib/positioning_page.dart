@@ -25,6 +25,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   bool _autoCenter = true;
   bool _showTimeline = true;
   bool _isImportMode = false;
+  bool _isImporting = false;
+  double _importProgress = 0.0;
   PositionInfo? _currentInfo;
   ImuData? _currentImuInfo;
   int? _selectedIndex;
@@ -252,6 +254,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
 
       if (result != null && result.files.single.path != null) {
         File file = File(result.files.single.path!);
+        final int totalBytes = await file.length();
+        int processedBytes = 0;
 
         setState(() {
           _points.clear();
@@ -259,13 +263,9 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           _currentInfo = null;
           _selectedIndex = null;
           _isImportMode = true;
+          _isImporting = true;
+          _importProgress = 0.0;
         });
-
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('正在读取和解析文件，请稍候...')));
-        }
 
         final parser = ImuDataParser();
         List<PositionHistoryPoint> newPoints = [];
@@ -273,9 +273,11 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         int? lastSec;
 
         int lastYieldTime = DateTime.now().millisecondsSinceEpoch;
+        int lastProgressUpdate = DateTime.now().millisecondsSinceEpoch;
 
         // Parse chunk by chunk to avoid out of memory and UI freeze
         await for (final chunk in file.openRead()) {
+          processedBytes += chunk.length;
           parser.parseData(chunk, (data) {
             if (data.utcSec != null && data.utcSec != lastSec) {
               if (data.lat != null &&
@@ -303,8 +305,18 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
             }
           }, broadcast: false);
 
-          // Yield control to UI thread every 20ms to prevent freezing
+          // Update progress every 100ms to avoid too many setState calls
           final now = DateTime.now().millisecondsSinceEpoch;
+          if (now - lastProgressUpdate > 100) {
+            setState(() {
+              _importProgress = totalBytes > 0
+                  ? processedBytes / totalBytes
+                  : 0.0;
+            });
+            lastProgressUpdate = now;
+          }
+
+          // Yield control to UI thread every 20ms to prevent freezing
           if (now - lastYieldTime > 20) {
             await Future.delayed(Duration.zero);
             lastYieldTime = now;
@@ -320,6 +332,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           if (lastData != null) {
             _currentImuInfo = lastData;
           }
+          _isImporting = false;
+          _importProgress = 1.0;
         });
 
         if (_points.isNotEmpty) {
@@ -330,7 +344,6 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         }
 
         if (mounted) {
-          ScaffoldMessenger.of(context).hideCurrentSnackBar();
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('文件解析完成，共载入 ${newPoints.length} 个轨迹点')),
           );
@@ -338,6 +351,12 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
       }
     } catch (e) {
       debugPrint('Error importing file: $e');
+      if (mounted) {
+        setState(() {
+          _isImporting = false;
+          _importProgress = 0.0;
+        });
+      }
     }
   }
 
@@ -348,6 +367,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
       _currentImuInfo = null;
       _selectedIndex = null;
       _isImportMode = false;
+      _isImporting = false;
+      _importProgress = 0.0;
     });
   }
 
@@ -671,6 +692,60 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                         });
                       },
                       tooltip: '回到最新',
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          // Import progress bar overlay at the bottom
+          if (_isImporting)
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.75),
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(8),
+                    topRight: Radius.circular(8),
+                  ),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '正在导入IMU数据...',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: LinearProgressIndicator(
+                        value: _importProgress,
+                        minHeight: 6,
+                        backgroundColor: Colors.grey[700],
+                        valueColor: const AlwaysStoppedAnimation<Color>(
+                          Colors.greenAccent,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${(_importProgress * 100).toStringAsFixed(1)}%',
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 11,
+                      ),
                     ),
                   ],
                 ),
