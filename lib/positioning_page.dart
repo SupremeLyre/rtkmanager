@@ -60,7 +60,10 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   }
 
   void _handleImuData(ImuData data) {
-    if (data.utcMsec != null && data.utcMsec! % 1000 == 0) {
+    if (data.utcYear != null &&
+        data.utcYear! > 2000 &&
+        data.utcMsec != null &&
+        data.utcMsec! % 1000 == 0) {
       if (data.lat != null &&
           data.lon != null &&
           data.lat! != 0 &&
@@ -271,6 +274,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         List<PositionHistoryPoint> newPoints = [];
         ImuData? lastData;
         int? lastSec;
+        bool firstPointFound = false;
 
         int lastYieldTime = DateTime.now().millisecondsSinceEpoch;
         int lastProgressUpdate = DateTime.now().millisecondsSinceEpoch;
@@ -279,7 +283,10 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         await for (final chunk in file.openRead()) {
           processedBytes += chunk.length;
           parser.parseData(chunk, (data) {
-            if (data.utcSec != null && data.utcSec != lastSec) {
+            if (data.utcYear != null &&
+                data.utcYear! > 2000 &&
+                data.utcSec != null &&
+                data.utcSec != lastSec) {
               if (data.lat != null &&
                   data.lon != null &&
                   data.lat! != 0 &&
@@ -301,6 +308,23 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
 
                 newPoints.add(point);
                 lastData = data;
+
+                if (!firstPointFound) {
+                  firstPointFound = true;
+                  // Immediately add first point and center map
+                  _points.add(point);
+                  newPoints.clear();
+                  if (mounted) {
+                    setState(() {
+                      _selectedIndex = 0;
+                      _mapController.move(
+                        point.location,
+                        _mapController.camera.zoom,
+                      );
+                      _currentImuInfo = data;
+                    });
+                  }
+                }
               }
             }
           }, broadcast: false);
@@ -312,6 +336,10 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
               _importProgress = totalBytes > 0
                   ? processedBytes / totalBytes
                   : 0.0;
+              if (newPoints.isNotEmpty) {
+                _points.addAll(newPoints);
+                newPoints.clear();
+              }
             });
             lastProgressUpdate = now;
           }
@@ -324,28 +352,21 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         }
 
         setState(() {
-          _points.addAll(newPoints);
+          if (newPoints.isNotEmpty) {
+            _points.addAll(newPoints);
+            newPoints.clear();
+          }
           if (_points.length > 50000) {
             // Keep more points for imported files
             _points.removeRange(0, _points.length - 50000);
-          }
-          if (lastData != null) {
-            _currentImuInfo = lastData;
           }
           _isImporting = false;
           _importProgress = 1.0;
         });
 
-        if (_points.isNotEmpty) {
-          _mapController.move(
-            _points.first.location,
-            _mapController.camera.zoom,
-          );
-        }
-
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('文件解析完成，共载入 ${newPoints.length} 个轨迹点')),
+            SnackBar(content: Text('文件解析完成，共载入 ${_points.length} 个轨迹点')),
           );
         }
       }
@@ -358,6 +379,22 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         });
       }
     }
+  }
+
+  void _updateToSelectedEpoch(int index) {
+    setState(() {
+      _selectedIndex = index;
+      _autoCenter = false; // Disable auto center when manually reviewing
+      final point = _points[index];
+      _mapController.move(point.location, _mapController.camera.zoom);
+      if (point.isImu) {
+        _currentImuInfo = point.imuData;
+        _currentInfo = null;
+      } else {
+        _currentInfo = point.posInfo;
+        _currentImuInfo = null;
+      }
+    });
   }
 
   void _clearPoints() {
@@ -639,30 +676,56 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                           onChanged: _points.length <= 1
                               ? null
                               : (value) {
-                                  setState(() {
-                                    _selectedIndex = value.toInt();
-                                    _autoCenter =
-                                        false; // Disable auto center when manually reviewing
-                                    final point = _points[_selectedIndex!];
-                                    _mapController.move(
-                                      point.location,
-                                      _mapController.camera.zoom,
-                                    );
-                                    if (point.isImu) {
-                                      _currentImuInfo = point.imuData;
-                                      _currentInfo = null;
-                                    } else {
-                                      _currentInfo = point.posInfo;
-                                      _currentImuInfo = null;
-                                    }
-                                  });
+                                  _updateToSelectedEpoch(value.toInt());
                                 },
                         ),
                       ),
                     ),
+                    IconButton(
+                      icon: const Icon(
+                        Icons.chevron_left,
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 28,
+                        minHeight: 28,
+                      ),
+                      onPressed: () {
+                        if (_points.isEmpty) return;
+                        int currentIndex =
+                            _selectedIndex ?? (_points.length - 1);
+                        if (currentIndex > 0) {
+                          _updateToSelectedEpoch(currentIndex - 1);
+                        }
+                      },
+                      tooltip: '上一历元',
+                    ),
                     Text(
                       '${(_selectedIndex ?? (_points.length - 1)) + 1} / ${_points.length}',
                       style: const TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                    IconButton(
+                      icon: const Icon(
+                        Icons.chevron_right,
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 28,
+                        minHeight: 28,
+                      ),
+                      onPressed: () {
+                        if (_points.isEmpty) return;
+                        int currentIndex =
+                            _selectedIndex ?? (_points.length - 1);
+                        if (currentIndex < _points.length - 1) {
+                          _updateToSelectedEpoch(currentIndex + 1);
+                        }
+                      },
+                      tooltip: '下一历元',
                     ),
                     IconButton(
                       icon: const Icon(
