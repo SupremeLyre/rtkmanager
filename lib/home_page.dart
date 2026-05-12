@@ -3,6 +3,7 @@ import 'serial_debug_page.dart';
 import 'rtk_config_page.dart';
 import 'positioning_page.dart';
 import 'satellite_page.dart';
+import 'imu_batch_decode_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -70,6 +71,12 @@ class _HomePageState extends State<HomePage> {
                 selected: _selectedIndex == 3,
                 onTap: () => _onItemTapped(3),
               ),
+              ListTile(
+                leading: const Icon(Icons.data_object),
+                title: const Text('IMU 批量解码'),
+                selected: _selectedIndex == 4,
+                onTap: () => _onItemTapped(4),
+              ),
             ],
           ),
         ),
@@ -81,6 +88,7 @@ class _HomePageState extends State<HomePage> {
           RtkConfigPage(onOpenDrawer: _openDrawer),
           MobilePositioningPage(onOpenDrawer: _openDrawer),
           SatellitePage(onOpenDrawer: _openDrawer),
+          ImuBatchDecodePage(onOpenDrawer: _openDrawer),
         ],
       ),
     );
