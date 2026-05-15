@@ -40,6 +40,17 @@ class SerialService {
   List<int> _buffer = [];
   ByteConversionSink? _textConversionSink;
 
+  int _rxBytes = 0;
+  int _txBytes = 0;
+
+  int get rxBytes => _rxBytes;
+  int get txBytes => _txBytes;
+
+  void resetByteCounters() {
+    _rxBytes = 0;
+    _txBytes = 0;
+  }
+
   bool get isOpen => _isOpen;
   SerialPort? get port => _port;
 
@@ -70,6 +81,7 @@ class SerialService {
         _reader = SerialPortReader(_port!);
         _reader!.stream.listen(
           (data) {
+            _rxBytes += data.length;
             _dataStreamController.add(data);
             _processLines(data);
             _textConversionSink?.add(data);
@@ -120,7 +132,9 @@ class SerialService {
   int write(Uint8List data) {
     if (_isOpen && _port != null) {
       try {
-        return _port!.write(data);
+        int written = _port!.write(data);
+        _txBytes += written;
+        return written;
       } catch (e) {
         close();
         rethrow;
@@ -137,7 +151,8 @@ class SerialService {
 
     // Scan for newlines efficiently
     for (int i = 0; i < _buffer.length; i++) {
-      if (_buffer[i] == 10) { // 10 is \n
+      if (_buffer[i] == 10) {
+        // 10 is \n
         List<int> lineBytes = _buffer.sublist(lastIndex, i + 1);
         try {
           String line = utf8.decode(lineBytes, allowMalformed: true).trim();

@@ -26,6 +26,12 @@ class _SerialDebugPageState extends State<SerialDebugPage>
   final NtripService _ntripService = NtripService();
   bool _isGlobalSaving = false;
 
+  Timer? _dataRateTimer;
+  int _lastRxBytes = 0;
+  int _lastTxBytes = 0;
+  int _rxDataRate = 0;
+  int _txDataRate = 0;
+
   @override
   void initState() {
     super.initState();
@@ -42,6 +48,46 @@ class _SerialDebugPageState extends State<SerialDebugPage>
     );
 
     _tabController = TabController(length: _tabs.length, vsync: this);
+
+    _tabController.addListener(_onTabChanged);
+
+    _dataRateTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => _calculateDataRate(),
+    );
+  }
+
+  void _onTabChanged() {
+    if (!_tabController.indexIsChanging) {
+      // Reset counters when switching tabs
+      final service = _tabs[_tabController.index].service;
+      _lastRxBytes = service.rxBytes;
+      _lastTxBytes = service.txBytes;
+      setState(() {
+        _rxDataRate = 0;
+        _txDataRate = 0;
+      });
+    }
+  }
+
+  void _calculateDataRate() {
+    if (!mounted || _tabs.isEmpty) return;
+
+    final int currentIndex = _tabController.index;
+    if (currentIndex >= 0 && currentIndex < _tabs.length) {
+      final service = _tabs[currentIndex].service;
+
+      final int currentRx = service.rxBytes;
+      final int currentTx = service.txBytes;
+
+      setState(() {
+        _rxDataRate = currentRx - _lastRxBytes;
+        _txDataRate = currentTx - _lastTxBytes;
+      });
+
+      _lastRxBytes = currentRx;
+      _lastTxBytes = currentTx;
+    }
   }
 
   Future<void> _toggleGlobalSaving() async {
@@ -86,6 +132,11 @@ class _SerialDebugPageState extends State<SerialDebugPage>
     return _ntripService.isConnected ? Colors.green : Colors.red;
   }
 
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  }
+
   void _addTab() {
     setState(() {
       _tabs.add(
@@ -125,7 +176,9 @@ class _SerialDebugPageState extends State<SerialDebugPage>
 
   @override
   void dispose() {
+    _dataRateTimer?.cancel();
     _ntripService.removeListener(_onNtripStateChanged);
+    _tabController.removeListener(_onTabChanged);
     _tabController.dispose();
     // Close all non-singleton services
     for (var tab in _tabs) {
@@ -155,6 +208,29 @@ class _SerialDebugPageState extends State<SerialDebugPage>
           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
         ),
         actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 12.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  'RX: ${_formatBytes(_rxDataRate)}/s',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: Colors.greenAccent,
+                  ),
+                ),
+                Text(
+                  'TX: ${_formatBytes(_txDataRate)}/s',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: Colors.blueAccent,
+                  ),
+                ),
+              ],
+            ),
+          ),
           Padding(
             padding: const EdgeInsets.only(right: 8.0),
             child: Container(
@@ -606,25 +682,27 @@ class SerialDebugContentState extends State<SerialDebugContent>
       ),
       child: Stack(
         children: [
-          ListView.builder(
-            controller: _scrollController,
-            itemCount: _receivedData.length + 1,
-            itemBuilder: (context, index) {
-              String text;
-              if (index < _receivedData.length) {
-                text = _receivedData[index];
-              } else {
-                text = _incompleteLine;
-              }
-              return Text(
-                text,
-                style: const TextStyle(
-                  color: Colors.greenAccent,
-                  fontFamily: 'SourceCodePro',
-                  fontFamilyFallback: ['SourceHanSansHWSC'],
-                ),
-              );
-            },
+          SelectionArea(
+            child: ListView.builder(
+              controller: _scrollController,
+              itemCount: _receivedData.length + 1,
+              itemBuilder: (context, index) {
+                String text;
+                if (index < _receivedData.length) {
+                  text = _receivedData[index];
+                } else {
+                  text = _incompleteLine;
+                }
+                return Text(
+                  text,
+                  style: const TextStyle(
+                    color: Colors.greenAccent,
+                    fontFamily: 'SourceCodePro',
+                    fontFamilyFallback: ['SourceHanSansHWSC'],
+                  ),
+                );
+              },
+            ),
           ),
           Positioned(
             right: 8,
