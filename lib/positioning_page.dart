@@ -24,6 +24,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   StreamSubscription<ImuData>? _imuSubscription;
   bool _autoCenter = true;
   bool _showTimeline = true;
+  bool _showPppsol = true;
+  bool _showGga = true;
   bool _isImportMode = false;
   bool _isImporting = false;
   double _importProgress = 0.0;
@@ -75,6 +77,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           location: gcj02Pos,
           status: status,
           isImu: true,
+          type: PointType.imu,
           imuData: data,
         );
 
@@ -98,12 +101,100 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   }
 
   void _handleLine(String line) {
-    // $PPPSOL,20260107121342.00,4,08,114.35696878,0.016,30.52845181,...
-    if (!line.startsWith('\$PPPSOL')) return;
+    var point = _parseNmeaLine(line);
+    if (point == null) return;
+
+    setState(() {
+      if (_selectedIndex == null) {
+        if (!point.isImu) {
+          _currentInfo = point.posInfo;
+          _currentImuInfo = null;
+        }
+      }
+      _points.add(point);
+      if (_selectedIndex == null && _points.length > 5000) {
+        _points.removeAt(0);
+      }
+    });
+
+    if (_autoCenter && _selectedIndex == null) {
+      _mapController.move(point.location, _mapController.camera.zoom);
+    }
+  }
+
+  PositionHistoryPoint? _parseNmeaLine(String line) {
+    if (line.startsWith('\$GNGGA') ||
+        line.startsWith('\$GPGGA') ||
+        line.startsWith('\$GBGGA')) {
+      try {
+        final parts = line.split(',');
+        if (parts.length < 15) return null;
+
+        final int status = int.tryParse(parts[6]) ?? 0;
+        if (status == 0) return null;
+
+        final String rawTime = parts[1];
+        String timeStr = rawTime;
+        if (rawTime.length >= 6) {
+          timeStr =
+              "${rawTime.substring(0, 2)}:${rawTime.substring(2, 4)}:${rawTime.substring(4)}";
+        }
+
+        final latStr = parts[2];
+        final latDir = parts[3];
+        final lonStr = parts[4];
+        final lonDir = parts[5];
+
+        if (latStr.isEmpty || lonStr.isEmpty) return null;
+
+        double convertNmeaToDegree(double nmeaArr) {
+          double deg = (nmeaArr / 100).floorToDouble();
+          double min = nmeaArr - deg * 100;
+          return deg + min / 60.0;
+        }
+
+        double lat = convertNmeaToDegree(double.tryParse(latStr) ?? 0);
+        if (latDir == 'S') lat = -lat;
+
+        double lon = convertNmeaToDegree(double.tryParse(lonStr) ?? 0);
+        if (lonDir == 'W') lon = -lon;
+
+        if (lat == 0 || lon == 0) return null;
+
+        final LatLng gcj02Pos = CoordinateConverter.wgs84ToGcj02(lat, lon);
+
+        final newInfo = PositionInfo(
+          utcTime: timeStr,
+          status: status,
+          speed: 0.0,
+          posAcc: 0.0,
+          speedAcc: 0.0,
+          dop1: double.tryParse(parts[8]) ?? 0.0,
+          dop2: 0,
+          dop3: 0,
+          satellites: int.tryParse(parts[7]) ?? 0,
+          altitude: double.tryParse(parts[9]) ?? 0.0,
+          type: PointType.gga,
+        );
+
+        return PositionHistoryPoint(
+          location: gcj02Pos,
+          status: status,
+          isImu: false,
+          type: PointType.gga,
+          posInfo: newInfo,
+        );
+      } catch (e) {
+        debugPrint('Error parsing GGA: $e');
+        return null;
+      }
+    }
+
+    if (!line.startsWith('\$PPPSOL')) return null;
 
     try {
       final parts = line.split(',');
-      if (parts.length < 23) return; // Ensure we have enough fields
+      if (parts.length < 23) return null; // Ensure we have enough fields
 
       // Parse Status
       final int status = int.tryParse(parts[2]) ?? 0;
@@ -112,7 +203,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
       final double lon = double.tryParse(parts[4]) ?? 0.0;
       final double lat = double.tryParse(parts[6]) ?? 0.0;
 
-      if (lon == 0 && lat == 0) return;
+      if (lon == 0 && lat == 0) return null;
 
       // Convert WGS84 to GCJ-02
       final LatLng gcj02Pos = CoordinateConverter.wgs84ToGcj02(lat, lon);
@@ -162,36 +253,39 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         dop1: dop1,
         dop2: dop2,
         dop3: dop3,
+        satellites: int.tryParse(parts[3]) ?? 0,
+        altitude: double.tryParse(parts[8]) ?? 0.0,
+        type: PointType.pppsol,
       );
 
-      final point = PositionHistoryPoint(
+      return PositionHistoryPoint(
         location: gcj02Pos,
         status: status,
         isImu: false,
+        type: PointType.pppsol,
         posInfo: newInfo,
       );
-
-      setState(() {
-        if (_selectedIndex == null) {
-          _currentInfo = newInfo;
-          _currentImuInfo = null;
-        }
-        _points.add(point);
-        // Keep a reasonable buffer if needed, e.g., last 10000 points
-        if (_selectedIndex == null && _points.length > 5000) {
-          _points.removeAt(0);
-        }
-      });
-
-      if (_autoCenter && _selectedIndex == null) {
-        _mapController.move(gcj02Pos, _mapController.camera.zoom);
-      }
     } catch (e) {
       debugPrint('Error parsing PPPSOL: $e');
+      return null;
     }
   }
 
-  Color _getColorForStatus(int status, bool isImu) {
+  Color _getColorForStatus(int status, bool isImu, {PointType? pointType}) {
+    if (pointType == PointType.gga) {
+      switch (status) {
+        case 1:
+          return Colors.orange; // SPP
+        case 2:
+          return Colors.purple; // DGPS
+        case 4:
+          return Colors.teal; // RTK FIX
+        case 5:
+          return Colors.amber; // RTK FLOAT
+        default:
+          return Colors.grey;
+      }
+    }
     if (isImu) {
       switch (status) {
         case 1:
@@ -221,7 +315,21 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     }
   }
 
-  String _getStatusText(int status, bool isImu) {
+  String _getStatusText(int status, bool isImu, {PointType? pointType}) {
+    if (pointType == PointType.gga) {
+      switch (status) {
+        case 1:
+          return "SPP (1)";
+        case 2:
+          return "DGPS (2)";
+        case 4:
+          return "RTK FIX (4)";
+        case 5:
+          return "RTK FLOAT (5)";
+        default:
+          return "UNKNOWN ($status)";
+      }
+    }
     if (isImu) {
       switch (status) {
         case 1:
@@ -271,8 +379,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         });
 
         final parser = ImuDataParser();
+        final nmeaParser = NmeaParser();
         List<PositionHistoryPoint> newPoints = [];
-        ImuData? lastData;
         int? lastSec;
         bool firstPointFound = false;
 
@@ -303,17 +411,16 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                   location: gcj02Pos,
                   status: status,
                   isImu: true,
+                  type: PointType.imu,
                   imuData: data,
                 );
 
                 newPoints.add(point);
-                lastData = data;
 
                 if (!firstPointFound) {
                   firstPointFound = true;
                   // Immediately add first point and center map
                   _points.add(point);
-                  newPoints.clear();
                   if (mounted) {
                     setState(() {
                       _selectedIndex = 0;
@@ -328,6 +435,27 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
               }
             }
           }, broadcast: false);
+
+          nmeaParser.parseChunk(chunk, (line) {
+            var point = _parseNmeaLine(line);
+            if (point != null) {
+              newPoints.add(point);
+              if (!firstPointFound) {
+                firstPointFound = true;
+                _points.add(point);
+                if (mounted) {
+                  setState(() {
+                    _selectedIndex = 0;
+                    _mapController.move(
+                      point.location,
+                      _mapController.camera.zoom,
+                    );
+                    _currentInfo = point.posInfo;
+                  });
+                }
+              }
+            }
+          });
 
           // Update progress every 100ms to avoid too many setState calls
           final now = DateTime.now().millisecondsSinceEpoch;
@@ -411,6 +539,26 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
 
   @override
   Widget build(BuildContext context) {
+    List<int> visibleIndices = [];
+    for (int i = 0; i < _points.length; i++) {
+      final p = _points[i];
+      if (p.type == PointType.pppsol && !_showPppsol) continue;
+      if (p.type == PointType.gga && !_showGga) continue;
+      visibleIndices.add(i);
+    }
+
+    int currentSliderPos = 0;
+    if (visibleIndices.isNotEmpty) {
+      if (_selectedIndex == null) {
+        currentSliderPos = visibleIndices.length - 1;
+      } else {
+        currentSliderPos = visibleIndices.indexOf(_selectedIndex!);
+        if (currentSliderPos == -1) {
+          currentSliderPos = visibleIndices.length - 1;
+        }
+      }
+    }
+
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 36,
@@ -462,6 +610,69 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
               },
             ),
           IconButton(
+            icon: Icon(
+              Icons.gps_fixed,
+              color: _showPppsol ? null : Colors.grey,
+            ),
+            iconSize: 20,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            tooltip: _showPppsol ? '隐藏PPPSOL' : '显示PPPSOL',
+            onPressed: () {
+              setState(() {
+                _showPppsol = !_showPppsol;
+                _selectedIndex =
+                    null; // Reset selection so we don't stick to hidden points
+                if (_points.isNotEmpty) {
+                  // Find the latest valid point
+                  final point = _points.lastWhere(
+                    (p) =>
+                        (p.type == PointType.pppsol && _showPppsol) ||
+                        (p.type == PointType.gga && _showGga) ||
+                        (p.type == PointType.imu),
+                    orElse: () => _points.last,
+                  );
+                  if (point.isImu) {
+                    _currentImuInfo = point.imuData;
+                    _currentInfo = null;
+                  } else {
+                    _currentInfo = point.posInfo;
+                    _currentImuInfo = null;
+                  }
+                }
+              });
+            },
+          ),
+          IconButton(
+            icon: Icon(Icons.location_on, color: _showGga ? null : Colors.grey),
+            iconSize: 20,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            tooltip: _showGga ? '隐藏GGA' : '显示GGA',
+            onPressed: () {
+              setState(() {
+                _showGga = !_showGga;
+                _selectedIndex = null;
+                if (_points.isNotEmpty) {
+                  final point = _points.lastWhere(
+                    (p) =>
+                        (p.type == PointType.pppsol && _showPppsol) ||
+                        (p.type == PointType.gga && _showGga) ||
+                        (p.type == PointType.imu),
+                    orElse: () => _points.last,
+                  );
+                  if (point.isImu) {
+                    _currentImuInfo = point.imuData;
+                    _currentInfo = null;
+                  } else {
+                    _currentInfo = point.posInfo;
+                    _currentImuInfo = null;
+                  }
+                }
+              });
+            },
+          ),
+          IconButton(
             icon: const Icon(Icons.delete),
             iconSize: 20,
             padding: EdgeInsets.zero,
@@ -490,27 +701,34 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
               // Using CircleMarkers for points as they are more performant for many points than Icons
               CircleLayer(
                 circles: _points
+                    .where((p) {
+                      if (p.type == PointType.pppsol) return _showPppsol;
+                      if (p.type == PointType.gga) return _showGga;
+                      return true; // imu
+                    })
                     .map(
                       (p) => CircleMarker(
                         point: p.location,
                         color: _getColorForStatus(
                           p.status,
                           p.isImu,
+                          pointType: p.type,
                         ).withValues(alpha: 0.8),
                         borderStrokeWidth: 0.5,
                         borderColor: Colors.white,
-                        radius: 2, // visible size
+                        radius: p.type == PointType.gga
+                            ? 3
+                            : 2, // slightly larger for GGA
                         useRadiusInMeter: false,
                       ),
                     )
                     .toList(),
               ),
-              if (_points.isNotEmpty)
+              if (visibleIndices.isNotEmpty)
                 CircleLayer(
                   circles: [
                     CircleMarker(
-                      point: _points[_selectedIndex ?? (_points.length - 1)]
-                          .location,
+                      point: _points[visibleIndices[currentSliderPos]].location,
                       color: Colors.yellow.withValues(alpha: 0.8),
                       borderStrokeWidth: 1.5,
                       borderColor: Colors.black,
@@ -534,7 +752,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      "UTC: ${_currentInfo!.utcTime}",
+                      "${_currentInfo!.type == PointType.gga ? 'GGA' : 'PPP'} UTC: ${_currentInfo!.utcTime}",
                       style: const TextStyle(color: Colors.white, fontSize: 12),
                     ),
                     const SizedBox(height: 2),
@@ -545,11 +763,16 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                           style: TextStyle(color: Colors.white, fontSize: 12),
                         ),
                         Text(
-                          _getStatusText(_currentInfo!.status, false),
+                          _getStatusText(
+                            _currentInfo!.status,
+                            false,
+                            pointType: _currentInfo!.type,
+                          ),
                           style: TextStyle(
                             color: _getColorForStatus(
                               _currentInfo!.status,
                               false,
+                              pointType: _currentInfo!.type,
                             ),
                             fontSize: 12,
                             fontWeight: FontWeight.bold,
@@ -558,25 +781,79 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                       ],
                     ),
                     const SizedBox(height: 2),
-                    Text(
-                      "Speed: ${_currentInfo!.speed.toStringAsFixed(3)} m/s",
-                      style: const TextStyle(color: Colors.white, fontSize: 12),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      "Pos Acc: ${_currentInfo!.posAcc.toStringAsFixed(3)} m",
-                      style: const TextStyle(color: Colors.white, fontSize: 12),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      "Spd Acc: ${_currentInfo!.speedAcc.toStringAsFixed(3)} m/s",
-                      style: const TextStyle(color: Colors.white, fontSize: 12),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      "DOP: ${_currentInfo!.dop1.toStringAsFixed(2)} / ${_currentInfo!.dop2.toStringAsFixed(2)} / ${_currentInfo!.dop3.toStringAsFixed(2)}",
-                      style: const TextStyle(color: Colors.white, fontSize: 12),
-                    ),
+                    if (_currentInfo!.type == PointType.pppsol) ...[
+                      Text(
+                        "Speed: ${_currentInfo!.speed.toStringAsFixed(3)} m/s",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        "Altitude: ${_currentInfo!.altitude.toStringAsFixed(2)} m",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        "Pos Acc: ${_currentInfo!.posAcc.toStringAsFixed(3)} m",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        "Spd Acc: ${_currentInfo!.speedAcc.toStringAsFixed(3)} m/s",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        "DOP: ${_currentInfo!.dop1.toStringAsFixed(2)} / ${_currentInfo!.dop2.toStringAsFixed(2)} / ${_currentInfo!.dop3.toStringAsFixed(2)}",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        "Sats: ${_currentInfo!.satellites}",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ] else if (_currentInfo!.type == PointType.gga) ...[
+                      Text(
+                        "Altitude: ${_currentInfo!.altitude.toStringAsFixed(2)} m",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        "HDOP: ${_currentInfo!.dop1.toStringAsFixed(2)}",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        "Sats: ${_currentInfo!.satellites}",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -606,11 +883,12 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                           style: TextStyle(color: Colors.white, fontSize: 12),
                         ),
                         Text(
-                          "${_currentImuInfo!.gnssState} / ${_currentImuInfo!.fusionState} (${_getStatusText(_getEffectiveImuStatus(_currentImuInfo!), true).replaceAll('\n', ' ')})",
+                          "${_currentImuInfo!.gnssState} / ${_currentImuInfo!.fusionState} (${_getStatusText(_getEffectiveImuStatus(_currentImuInfo!), true, pointType: PointType.imu).replaceAll('\n', ' ')})",
                           style: TextStyle(
                             color: _getColorForStatus(
                               _getEffectiveImuStatus(_currentImuInfo!),
                               true,
+                              pointType: PointType.imu,
                             ),
                             fontSize: 12,
                             fontWeight: FontWeight.bold,
@@ -642,7 +920,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                 ),
               ),
             ),
-          if (_points.isNotEmpty && _showTimeline && _isImportMode)
+          if (visibleIndices.isNotEmpty && _showTimeline && _isImportMode)
             Positioned(
               bottom: 20,
               left: 20,
@@ -667,16 +945,17 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                           ),
                         ),
                         child: Slider(
-                          value: (_selectedIndex ?? (_points.length - 1))
-                              .toDouble(),
+                          value: currentSliderPos.toDouble(),
                           min: 0,
-                          max: (_points.length <= 1
+                          max: visibleIndices.isEmpty
                               ? 1.0
-                              : (_points.length - 1).toDouble()),
-                          onChanged: _points.length <= 1
+                              : (visibleIndices.length - 1).toDouble(),
+                          onChanged: visibleIndices.length <= 1
                               ? null
                               : (value) {
-                                  _updateToSelectedEpoch(value.toInt());
+                                  _updateToSelectedEpoch(
+                                    visibleIndices[value.toInt()],
+                                  );
                                 },
                         ),
                       ),
@@ -693,17 +972,17 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                         minHeight: 28,
                       ),
                       onPressed: () {
-                        if (_points.isEmpty) return;
-                        int currentIndex =
-                            _selectedIndex ?? (_points.length - 1);
-                        if (currentIndex > 0) {
-                          _updateToSelectedEpoch(currentIndex - 1);
+                        if (visibleIndices.isEmpty) return;
+                        if (currentSliderPos > 0) {
+                          _updateToSelectedEpoch(
+                            visibleIndices[currentSliderPos - 1],
+                          );
                         }
                       },
                       tooltip: '上一历元',
                     ),
                     Text(
-                      '${(_selectedIndex ?? (_points.length - 1)) + 1} / ${_points.length}',
+                      '${currentSliderPos + 1} / ${visibleIndices.length}',
                       style: const TextStyle(color: Colors.white, fontSize: 12),
                     ),
                     IconButton(
@@ -718,11 +997,11 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                         minHeight: 28,
                       ),
                       onPressed: () {
-                        if (_points.isEmpty) return;
-                        int currentIndex =
-                            _selectedIndex ?? (_points.length - 1);
-                        if (currentIndex < _points.length - 1) {
-                          _updateToSelectedEpoch(currentIndex + 1);
+                        if (visibleIndices.isEmpty) return;
+                        if (currentSliderPos < visibleIndices.length - 1) {
+                          _updateToSelectedEpoch(
+                            visibleIndices[currentSliderPos + 1],
+                          );
                         }
                       },
                       tooltip: '下一历元',
@@ -736,8 +1015,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                       onPressed: () {
                         setState(() {
                           _selectedIndex = null;
-                          if (_points.isNotEmpty) {
-                            final point = _points.last;
+                          if (visibleIndices.isNotEmpty) {
+                            final point = _points[visibleIndices.last];
                             if (point.isImu) {
                               _currentImuInfo = point.imuData;
                               _currentInfo = null;
@@ -829,6 +1108,9 @@ class PositionInfo {
   final double dop1;
   final double dop2;
   final double dop3;
+  final int satellites;
+  final double altitude;
+  final PointType type;
 
   PositionInfo({
     required this.utcTime,
@@ -839,6 +1121,9 @@ class PositionInfo {
     required this.dop1,
     required this.dop2,
     required this.dop3,
+    this.satellites = 0,
+    this.altitude = 0.0,
+    this.type = PointType.pppsol,
   });
 }
 
@@ -893,10 +1178,13 @@ class CoordinateConverter {
   }
 }
 
+enum PointType { imu, pppsol, gga }
+
 class PositionHistoryPoint {
   final LatLng location;
   final int status;
   final bool isImu;
+  final PointType type;
   final ImuData? imuData;
   final PositionInfo? posInfo;
 
@@ -904,7 +1192,60 @@ class PositionHistoryPoint {
     required this.location,
     required this.status,
     this.isImu = false,
+    this.type = PointType.imu,
     this.imuData,
     this.posInfo,
   });
+}
+
+class NmeaParser {
+  List<int> _buffer = [];
+
+  void parseChunk(List<int> chunk, void Function(String) onLine) {
+    _buffer.addAll(chunk);
+
+    int startIndex = 0;
+    while (startIndex < _buffer.length) {
+      int dollarIndex = _buffer.indexOf(36, startIndex); // Find '$'
+      if (dollarIndex == -1) {
+        break;
+      }
+
+      int nlIndex = _buffer.indexOf(10, dollarIndex); // Find '\n'
+      if (nlIndex == -1) {
+        _buffer = _buffer.sublist(dollarIndex);
+        if (_buffer.length > 4096) {
+          int latestDollar = _buffer.lastIndexOf(36);
+          if (latestDollar > 0) {
+            _buffer = _buffer.sublist(latestDollar);
+          } else {
+            _buffer.clear();
+          }
+        }
+        return;
+      }
+
+      int lastDollarIndex = _buffer.lastIndexOf(36, nlIndex);
+
+      int endIndex = nlIndex;
+      if (endIndex > lastDollarIndex && _buffer[endIndex - 1] == 13) {
+        endIndex--; // Strip '\r'
+      }
+
+      if (endIndex - lastDollarIndex < 1024) {
+        try {
+          String line = String.fromCharCodes(
+            _buffer.sublist(lastDollarIndex, endIndex),
+          );
+          if (line.isNotEmpty && line.startsWith('\$')) {
+            onLine(line);
+          }
+        } catch (_) {}
+      }
+
+      startIndex = nlIndex + 1;
+    }
+
+    _buffer.clear();
+  }
 }

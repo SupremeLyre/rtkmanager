@@ -30,6 +30,16 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
   String? _outputDir;
   bool _isDecoding = false;
 
+  // 设置项
+  bool _useTidCompensation = true;
+  bool _outputEuler = false;
+  bool _outputQuat = false;
+  bool _outputPos = false;
+  bool _outputVel = false;
+  bool _outputStatus = false;
+  bool _outputTemp = false;
+  bool _outputTid = false;
+
   Future<void> _pickFiles() async {
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       allowMultiple: true,
@@ -88,7 +98,16 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
         final outFile = File(outPath);
 
         final sink = outFile.openWrite();
-        sink.writeln("UTCTimestamp,gx,gy,gz,ax,ay,az");
+
+        String header = "UTCTimestamp,gx,gy,gz,ax,ay,az";
+        if (_outputTid) header += ",tid";
+        if (_outputEuler) header += ",pitch,roll,yaw";
+        if (_outputQuat) header += ",q0,q1,q2,q3";
+        if (_outputPos) header += ",lat,lon,alt";
+        if (_outputVel) header += ",ve,vn,vu";
+        if (_outputStatus) header += ",fusionState,gnssState";
+        if (_outputTemp) header += ",tempImu";
+        sink.writeln(header);
 
         String f(double? val) {
           return (val ?? 0.0).toStringAsFixed(6).padLeft(10);
@@ -129,7 +148,10 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
             );
             DateTime compDt = origDt;
 
-            if (lastTid != -1 && lastOrigDt != null && lastCompDt != null) {
+            if (_useTidCompensation &&
+                lastTid != -1 &&
+                lastOrigDt != null &&
+                lastCompDt != null) {
               int currentTid = imuData.tid ?? 0;
               int diffTid = (currentTid - lastTid) % 60000;
               if (diffTid < 0) diffTid += 60000;
@@ -181,9 +203,49 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
 
             String utcStr =
                 '$year-${month.toString().padLeft(2, '0')}-${day.toString().padLeft(2, '0')} ${hour.toString().padLeft(2, '0')}:${min.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}.${msec.toString().padLeft(3, '0')}';
-            sink.writeln(
-              '$utcStr,${f(imuData.wx)},${f(imuData.wy)},${f(imuData.wz)},${f(imuData.ax)},${f(imuData.ay)},${f(imuData.az)}',
-            );
+
+            String row =
+                '$utcStr,${f(imuData.wx)},${f(imuData.wy)},${f(imuData.wz)},${f(imuData.ax)},${f(imuData.ay)},${f(imuData.az)}';
+            if (_outputTid) {
+              row += ',${(imuData.tid ?? 0).toString().padLeft(5, '0')}';
+            }
+            if (_outputEuler) {
+              String eulerF(double? v) =>
+                  (v ?? 0.0).toStringAsFixed(5).padLeft(11);
+              row +=
+                  ',${eulerF(imuData.pitch)},${eulerF(imuData.roll)},${eulerF(imuData.yaw)}';
+            }
+            if (_outputQuat) {
+              String quatF(double? v) =>
+                  (v ?? 0.0).toStringAsFixed(6).padLeft(9);
+              row +=
+                  ',${quatF(imuData.q0)},${quatF(imuData.q1)},${quatF(imuData.q2)},${quatF(imuData.q3)}';
+            }
+            if (_outputPos) {
+              String latF(double? v) =>
+                  (v ?? 0.0).toStringAsFixed(10).padLeft(16);
+              String lonF(double? v) =>
+                  (v ?? 0.0).toStringAsFixed(10).padLeft(15);
+              String altF(double? v) =>
+                  (v ?? 0.0).toStringAsFixed(3).padLeft(9);
+              row +=
+                  ',${latF(imuData.lat)},${lonF(imuData.lon)},${altF(imuData.alt)}';
+            }
+            if (_outputVel) {
+              String velF(double? v) =>
+                  (v ?? 0.0).toStringAsFixed(3).padLeft(7);
+              row +=
+                  ',${velF(imuData.ve)},${velF(imuData.vn)},${velF(imuData.vu)}';
+            }
+            if (_outputStatus) {
+              row += ',${imuData.fusionState ?? 0},${imuData.gnssState ?? 0}';
+            }
+            if (_outputTemp) {
+              String tempF(double? v) =>
+                  (v ?? 0.0).toStringAsFixed(2).padLeft(7);
+              row += ',${tempF(imuData.tempImu)}';
+            }
+            sink.writeln(row);
           }, broadcast: false);
 
           processedBytes += chunk.length;
@@ -250,6 +312,133 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
                 style: TextStyle(color: Colors.white, fontSize: 18),
               ),
             ],
+          ),
+        ),
+        // 解码设置区域
+        Card(
+          margin: const EdgeInsets.all(8.0),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 16.0,
+              vertical: 8.0,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '解码设置',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 16,
+                  runSpacing: 0,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Checkbox(
+                          value: _useTidCompensation,
+                          onChanged: _isDecoding
+                              ? null
+                              : (v) => setState(
+                                  () => _useTidCompensation = v ?? true,
+                                ),
+                        ),
+                        const Text('使用TID补偿时间戳'),
+                      ],
+                    ),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Checkbox(
+                          value: _outputEuler,
+                          onChanged: _isDecoding
+                              ? null
+                              : (v) =>
+                                    setState(() => _outputEuler = v ?? false),
+                        ),
+                        const Text('输出欧拉角'),
+                      ],
+                    ),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Checkbox(
+                          value: _outputQuat,
+                          onChanged: _isDecoding
+                              ? null
+                              : (v) => setState(() => _outputQuat = v ?? false),
+                        ),
+                        const Text('输出四元数'),
+                      ],
+                    ),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Checkbox(
+                          value: _outputPos,
+                          onChanged: _isDecoding
+                              ? null
+                              : (v) => setState(() => _outputPos = v ?? false),
+                        ),
+                        const Text('输出位置(经纬高)'),
+                      ],
+                    ),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Checkbox(
+                          value: _outputVel,
+                          onChanged: _isDecoding
+                              ? null
+                              : (v) => setState(() => _outputVel = v ?? false),
+                        ),
+                        const Text('输出速度(东/北/天)'),
+                      ],
+                    ),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Checkbox(
+                          value: _outputStatus,
+                          onChanged: _isDecoding
+                              ? null
+                              : (v) =>
+                                    setState(() => _outputStatus = v ?? false),
+                        ),
+                        const Text('输出状态'),
+                      ],
+                    ),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Checkbox(
+                          value: _outputTemp,
+                          onChanged: _isDecoding
+                              ? null
+                              : (v) => setState(() => _outputTemp = v ?? false),
+                        ),
+                        const Text('输出温度'),
+                      ],
+                    ),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Checkbox(
+                          value: _outputTid,
+                          onChanged: _isDecoding
+                              ? null
+                              : (v) => setState(() => _outputTid = v ?? false),
+                        ),
+                        const Text('输出TID'),
+                      ],
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
         // Toolbar
