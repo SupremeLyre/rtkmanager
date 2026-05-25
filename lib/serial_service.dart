@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter_libserialport/flutter_libserialport.dart';
 
@@ -23,6 +24,9 @@ class SerialService {
   SerialPort? _port;
   String? _currentPortName;
   SerialPortReader? _reader;
+  StreamSubscription<Uint8List>? _readerSubscription;
+  IOSink? _saveSink;
+  String? _saveFilePath;
   bool _isOpen = false;
 
   // Stream for received data (raw bytes)
@@ -53,6 +57,9 @@ class SerialService {
 
   bool get isOpen => _isOpen;
   SerialPort? get port => _port;
+  String? get currentPortName => _currentPortName;
+  bool get isSavingToFile => _saveSink != null;
+  String? get saveFilePath => _saveFilePath;
 
   void open(String portName, int baudRate, bool rts, bool dtr) {
     if (_isOpen) close();
@@ -79,9 +86,15 @@ class SerialService {
         );
 
         _reader = SerialPortReader(_port!);
-        _reader!.stream.listen(
+        _readerSubscription = _reader!.stream.listen(
           (data) {
             _rxBytes += data.length;
+            try {
+              _saveSink?.add(data);
+            } catch (_) {
+              _saveSink = null;
+              _saveFilePath = null;
+            }
             _dataStreamController.add(data);
             _processLines(data);
             _textConversionSink?.add(data);
@@ -113,14 +126,17 @@ class SerialService {
   }
 
   void close() {
+    _stopSavingFireAndForget();
     if (_currentPortName != null) {
       _activeServices.remove(_currentPortName);
       _currentPortName = null;
     }
+    _readerSubscription?.cancel();
     if (_port != null && _port!.isOpen) {
       _reader?.close();
       _port!.close();
     }
+    _readerSubscription = null;
     _textConversionSink?.close();
     _textConversionSink = null;
     _isOpen = false;
@@ -141,6 +157,35 @@ class SerialService {
       }
     }
     return 0;
+  }
+
+  Future<void> startSavingToFile(String filePath) async {
+    if (_saveSink != null) {
+      await stopSavingToFile();
+    }
+    _saveSink = File(filePath).openWrite(mode: FileMode.append);
+    _saveFilePath = filePath;
+  }
+
+  Future<void> stopSavingToFile() async {
+    final sink = _saveSink;
+    _saveSink = null;
+    _saveFilePath = null;
+
+    if (sink != null) {
+      await sink.flush();
+      await sink.close();
+    }
+  }
+
+  void _stopSavingFireAndForget() {
+    final sink = _saveSink;
+    _saveSink = null;
+    _saveFilePath = null;
+
+    if (sink != null) {
+      sink.flush().then((_) => sink.close()).catchError((_) {});
+    }
   }
 
   void _processLines(Uint8List data) {
@@ -185,10 +230,10 @@ class SerialService {
   }
 
   void dispose() {
+    close();
     _dataStreamController.close();
     _lineStreamController.close();
     _textStreamController.close();
-    close();
   }
 }
 

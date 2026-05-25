@@ -91,21 +91,31 @@ class _SerialDebugPageState extends State<SerialDebugPage>
   }
 
   Future<void> _toggleGlobalSaving() async {
-    bool newState = !_isGlobalSaving;
+    final bool newState = !_isGlobalSaving;
+    final List<String> errors = [];
+    int affectedCount = 0;
 
     for (var tab in _tabs) {
-      var state = tab.key.currentState;
-      if (state != null) {
-        state.setGlobalOverride(newState);
+      try {
         if (newState) {
-          // If turning on global saving, start saving on all
-          await state.startSavingByParent();
-        } else {
-          // If turning off, stop saving on all
-          await state.stopSavingByParent();
+          if (!tab.service.isOpen || tab.service.isSavingToFile) continue;
+
+          final portName = tab.service.currentPortName;
+          if (portName == null) continue;
+
+          final filePath = await _buildSerialSaveFilePath(portName);
+          await tab.service.startSavingToFile(filePath);
+          affectedCount++;
+        } else if (tab.service.isSavingToFile) {
+          await tab.service.stopSavingToFile();
+          affectedCount++;
         }
+      } catch (e) {
+        errors.add('${tab.title}: $e');
       }
     }
+
+    if (!mounted) return;
 
     setState(() {
       _isGlobalSaving = newState;
@@ -114,8 +124,18 @@ class _SerialDebugPageState extends State<SerialDebugPage>
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(newState ? "已开启所有串口保存" : "已停止所有串口保存"),
-          backgroundColor: newState ? Colors.green : Colors.orange,
+          content: Text(
+            errors.isEmpty
+                ? (newState
+                      ? "已开启所有串口保存 ($affectedCount 个串口)"
+                      : "已停止所有串口保存 ($affectedCount 个串口)")
+                : (newState
+                      ? "部分串口保存失败: ${errors.first}"
+                      : "部分串口停止保存失败: ${errors.first}"),
+          ),
+          backgroundColor: errors.isEmpty
+              ? (newState ? Colors.green : Colors.orange)
+              : Colors.red,
         ),
       );
     }
@@ -166,12 +186,14 @@ class _SerialDebugPageState extends State<SerialDebugPage>
   }
 
   void _updateTabController({int initialIndex = 0}) {
+    _tabController.removeListener(_onTabChanged);
     _tabController.dispose();
     _tabController = TabController(
       length: _tabs.length,
       vsync: this,
       initialIndex: initialIndex,
     );
+    _tabController.addListener(_onTabChanged);
   }
 
   @override
@@ -310,7 +332,11 @@ class _SerialDebugPageState extends State<SerialDebugPage>
       body: TabBarView(
         controller: _tabController,
         children: _tabs.map((tab) {
-          return SerialDebugContent(key: tab.key, serialService: tab.service);
+          return SerialDebugContent(
+            key: tab.key,
+            serialService: tab.service,
+            globalSaving: _isGlobalSaving,
+          );
         }).toList(),
       ),
     );
@@ -333,8 +359,13 @@ class SerialTabItem {
 
 class SerialDebugContent extends StatefulWidget {
   final SerialService serialService;
+  final bool globalSaving;
 
-  const SerialDebugContent({super.key, required this.serialService});
+  const SerialDebugContent({
+    super.key,
+    required this.serialService,
+    required this.globalSaving,
+  });
 
   @override
   State<SerialDebugContent> createState() => SerialDebugContentState();
@@ -350,9 +381,6 @@ class SerialDebugContentState extends State<SerialDebugContent>
   bool _addCRLF = false;
   bool _hexDisplayMode = false;
   bool _parseIMU = false;
-  bool _isSavingToFile = false;
-  bool _isGlobalOverride = false;
-  IOSink? _fileSink;
 
   final ImuDataParser _imuParser = ImuDataParser();
 
@@ -378,6 +406,8 @@ class SerialDebugContentState extends State<SerialDebugContent>
 
   @override
   bool get wantKeepAlive => true;
+
+  bool get _isSavingToFile => widget.serialService.isSavingToFile;
 
   @override
   void initState() {
@@ -441,14 +471,6 @@ class SerialDebugContentState extends State<SerialDebugContent>
     // 2. 监听原始数据并按模式统一解码显示
     _rawSubscription = widget.serialService.dataStream.listen(
       (data) {
-        if (_isSavingToFile && _fileSink != null) {
-          try {
-            _fileSink!.add(data);
-          } catch (e) {
-            // Ignore write errors or handle them
-          }
-        }
-
         if (mounted) {
           if (_hexDisplayMode && _parseIMU) {
             _imuParser.parseData(data, (imuData) {
@@ -485,42 +507,10 @@ class SerialDebugContentState extends State<SerialDebugContent>
     );
   }
 
-  void setGlobalOverride(bool active) {
-    if (mounted) {
-      setState(() {
-        _isGlobalOverride = active;
-      });
-    }
-  }
-
-  Future<void> startSavingByParent() async {
-    if (!_isSavingToFile && widget.serialService.isOpen) {
-      await _toggleSaveToFile();
-    }
-  }
-
-  Future<void> stopSavingByParent() async {
-    if (_isSavingToFile) {
-      await _toggleSaveToFile();
-    }
-  }
-
   Future<void> _toggleSaveToFile() async {
     if (_isSavingToFile) {
-      // Stop saving
-      await _fileSink?.flush();
-      await _fileSink?.close();
-      setState(() {
-        _isSavingToFile = false;
-        _fileSink = null;
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("已停止保存文件")));
-      }
+      await _stopSavingToFile();
     } else {
-      // Start saving
       if (_selectedPort == null) {
         _showError("请先选择串口");
         return;
@@ -531,35 +521,48 @@ class SerialDebugContentState extends State<SerialDebugContent>
         return;
       }
 
-      try {
-        final directory = await getApplicationDocumentsDirectory();
-        String portName = _selectedPort!;
+      await _startSavingToFile(_selectedPort!);
+    }
+  }
 
-        // Clean port name for filename
-        if (Platform.isLinux && portName.startsWith('/dev/')) {
-          portName = portName.substring(5);
-        }
+  Future<void> _startSavingToFile(
+    String portName, {
+    bool showMessage = true,
+  }) async {
+    try {
+      final filePath = await _buildSerialSaveFilePath(portName);
+      await widget.serialService.startSavingToFile(filePath);
 
-        final now = DateTime.now();
-        final formatter = DateFormat('yyyy-MM-dd-HH-mm-ss');
-        final timestamp = formatter.format(now);
-        final fileName = '$portName-$timestamp.dat';
-        final filePath = '${directory.path}/$fileName';
+      if (!mounted) return;
+      setState(() {});
 
-        final file = File(filePath);
-        _fileSink = file.openWrite(mode: FileMode.append);
-
-        setState(() {
-          _isSavingToFile = true;
-        });
-
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text("开始保存到文件: $filePath")));
-        }
-      } catch (e) {
+      if (showMessage) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("开始保存到文件: $filePath")));
+      }
+    } catch (e) {
+      if (mounted) {
         _showError("无法创建文件: $e");
+      }
+    }
+  }
+
+  Future<void> _stopSavingToFile({bool showMessage = true}) async {
+    try {
+      await widget.serialService.stopSavingToFile();
+
+      if (!mounted) return;
+      setState(() {});
+
+      if (showMessage) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("已停止保存文件")));
+      }
+    } catch (e) {
+      if (mounted) {
+        _showError("关闭保存文件失败: $e");
       }
     }
   }
@@ -582,17 +585,17 @@ class SerialDebugContentState extends State<SerialDebugContent>
     });
   }
 
-  void _togglePort() {
+  Future<void> _togglePort() async {
     if (_selectedPort == null) return;
 
     if (widget.serialService.isOpen) {
-      _closePort();
+      await _closePort();
     } else {
-      _openPort();
+      await _openPort();
     }
   }
 
-  void _openPort() {
+  Future<void> _openPort() async {
     try {
       widget.serialService.open(
         _selectedPort!,
@@ -600,18 +603,26 @@ class SerialDebugContentState extends State<SerialDebugContent>
         _rtsEnabled,
         _dtrEnabled,
       );
+
+      if (widget.globalSaving) {
+        await _startSavingToFile(_selectedPort!, showMessage: false);
+      }
+
+      if (!mounted) return;
       setState(() {}); // Update UI
     } catch (e) {
       _showError("打开串口异常: $e");
     }
   }
 
-  void _closePort() {
+  Future<void> _closePort() async {
     if (_isSavingToFile) {
-      _toggleSaveToFile(); // Stop saving if port is closed
+      await _stopSavingToFile(showMessage: false);
     }
     widget.serialService.close();
-    setState(() {}); // Update UI
+    if (mounted) {
+      setState(() {}); // Update UI
+    }
   }
 
   void _sendData() {
@@ -666,7 +677,6 @@ class SerialDebugContentState extends State<SerialDebugContent>
   void dispose() {
     _lineSubscription?.cancel();
     _rawSubscription?.cancel();
-    _fileSink?.close();
     _sendController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -926,7 +936,9 @@ class SerialDebugContentState extends State<SerialDebugContent>
                                 child: ElevatedButton.icon(
                                   onPressed: _selectedPort == null
                                       ? null
-                                      : _togglePort,
+                                      : () {
+                                          _togglePort();
+                                        },
                                   icon: Icon(
                                     widget.serialService.isOpen
                                         ? Icons.link_off
@@ -1002,7 +1014,9 @@ class SerialDebugContentState extends State<SerialDebugContent>
                               ElevatedButton.icon(
                                 onPressed: _selectedPort == null
                                     ? null
-                                    : _togglePort,
+                                    : () {
+                                        _togglePort();
+                                      },
                                 icon: Icon(
                                   widget.serialService.isOpen
                                       ? Icons.link_off
@@ -1086,7 +1100,7 @@ class SerialDebugContentState extends State<SerialDebugContent>
                         SizedBox(
                           height: 28,
                           child: ElevatedButton.icon(
-                            onPressed: _isGlobalOverride
+                            onPressed: widget.globalSaving
                                 ? null
                                 : _toggleSaveToFile,
                             icon: Icon(
@@ -1094,7 +1108,7 @@ class SerialDebugContentState extends State<SerialDebugContent>
                               size: 14,
                             ),
                             label: Text(
-                              _isGlobalOverride
+                              widget.globalSaving
                                   ? "一键保存中"
                                   : (_isSavingToFile ? "停止保存" : "保存到文件"),
                               style: const TextStyle(fontSize: 12),
@@ -1146,4 +1160,21 @@ class SerialDebugContentState extends State<SerialDebugContent>
 
 List<String> _getKnownPorts(dynamic message) {
   return SerialPort.availablePorts;
+}
+
+Future<String> _buildSerialSaveFilePath(String portName) async {
+  final directory = await getApplicationDocumentsDirectory();
+  final now = DateTime.now();
+  final formatter = DateFormat('yyyy-MM-dd-HH-mm-ss');
+  final timestamp = formatter.format(now);
+  final safePortName = _safeSerialFileName(portName);
+  return '${directory.path}${Platform.pathSeparator}$safePortName-$timestamp.dat';
+}
+
+String _safeSerialFileName(String portName) {
+  String name = portName;
+  if (Platform.isLinux && name.startsWith('/dev/')) {
+    name = name.substring(5);
+  }
+  return name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
 }
