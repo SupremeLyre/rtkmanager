@@ -99,7 +99,7 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
 
         final sink = outFile.openWrite();
 
-        String header = "UTCTimestamp,gx,gy,gz,ax,ay,az";
+        String header = "GPSWeek,GPSSow,gx,gy,gz,ax,ay,az";
         if (_outputTid) header += ",tid";
         if (_outputEuler) header += ",pitch,roll,yaw";
         if (_outputQuat) header += ",q0,q1,q2,q3";
@@ -201,11 +201,19 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
             lastOrigDt = origDt;
             lastCompDt = compDt;
 
-            String utcStr =
-                '$year-${month.toString().padLeft(2, '0')}-${day.toString().padLeft(2, '0')} ${hour.toString().padLeft(2, '0')}:${min.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}.${msec.toString().padLeft(3, '0')}';
+            // UTC转GPS周和周内秒 (包含18秒闰秒补偿)
+            DateTime gpsEpoch = DateTime.utc(1980, 1, 6);
+            DateTime gpsDt = compDt.add(const Duration(seconds: 18));
+            Duration diff = gpsDt.difference(gpsEpoch);
+            int gpsWeek = diff.inDays ~/ 7;
+            double gpsSow =
+                (diff.inMicroseconds - gpsWeek * 7 * 24 * 3600 * 1000000) /
+                1000000.0;
+
+            String timeStr = '$gpsWeek,${gpsSow.toStringAsFixed(4)}';
 
             String row =
-                '$utcStr,${f(imuData.wx)},${f(imuData.wy)},${f(imuData.wz)},${f(imuData.ax)},${f(imuData.ay)},${f(imuData.az)}';
+                '$timeStr,${f(imuData.wx)},${f(imuData.wy)},${f(imuData.wz)},${f(imuData.ax)},${f(imuData.ay)},${f(imuData.az)}';
             if (_outputTid) {
               row += ',${(imuData.tid ?? 0).toString().padLeft(5, '0')}';
             }
