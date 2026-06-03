@@ -64,8 +64,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   void _handleImuData(ImuData data) {
     if (data.utcYear != null &&
         data.utcYear! > 2000 &&
-        data.utcMsec != null &&
-        data.utcMsec! % 1000 == 0) {
+        data.isUtcWholeSecond) {
       if (data.lat != null &&
           data.lon != null &&
           data.lat! != 0 &&
@@ -872,7 +871,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      "UTC: ${_currentImuInfo!.utcHour?.toString().padLeft(2, '0')}:${_currentImuInfo!.utcMin?.toString().padLeft(2, '0')}:${_currentImuInfo!.utcSec?.toString().padLeft(2, '0')}.${_currentImuInfo!.utcMsec?.toString().padLeft(3, '0')}",
+                      "UTC: ${_currentImuInfo!.utcHour?.toString().padLeft(2, '0')}:${_currentImuInfo!.utcMin?.toString().padLeft(2, '0')}:${_currentImuInfo!.utcSec?.toString().padLeft(2, '0')}.${_currentImuInfo!.utcFractionText}",
                       style: const TextStyle(color: Colors.white, fontSize: 12),
                     ),
                     const SizedBox(height: 2),

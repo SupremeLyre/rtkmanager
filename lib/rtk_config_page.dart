@@ -352,7 +352,9 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
     String hh = (data.utcHour ?? 0).toString().padLeft(2, '0');
     String mm = (data.utcMin ?? 0).toString().padLeft(2, '0');
     String ss = (data.utcSec ?? 0).toString().padLeft(2, '0');
-    String mss = (data.utcMsec ?? 0).toString().padLeft(3, '0').substring(0, 2);
+    String mss = ((data.utcSubsecondUsec ?? 0) ~/ 10000)
+        .toString()
+        .padLeft(2, '0');
     String timeStr = "$hh$mm$ss.$mss";
 
     // Lat: ddmm.mmmmmmm
@@ -405,7 +407,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
             data.lat! != 0 &&
             data.lon! != 0) {
           // 只发送整秒
-          if (data.utcMsec != null && data.utcMsec! % 1000 == 0) {
+          if (data.isUtcWholeSecond) {
             String timeStr = "${data.utcHour}${data.utcMin}${data.utcSec}";
             if (timeStr != lastSentTime) {
               lastSentTime = timeStr;

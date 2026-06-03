@@ -128,7 +128,8 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
             int hour = imuData.utcHour ?? 0;
             int min = imuData.utcMin ?? 0;
             int sec = imuData.utcSec ?? 0;
-            int msec = imuData.utcMsec ?? 0;
+            int msec = imuData.utcDateTimeMsec;
+            int usec = imuData.utcDateTimeUsec;
 
             if (year < 2026 || month == 0 || day == 0) return;
 
@@ -145,6 +146,7 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
               min,
               sec,
               msec,
+              usec,
             );
             DateTime compDt = origDt;
 
@@ -210,7 +212,7 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
                 (diff.inMicroseconds - gpsWeek * 7 * 24 * 3600 * 1000000) /
                 1000000.0;
 
-            String timeStr = '$gpsWeek,${gpsSow.toStringAsFixed(4)}';
+            String timeStr = '$gpsWeek,${gpsSow.toStringAsFixed(6)}';
 
             String row =
                 '$timeStr,${f(imuData.wx)},${f(imuData.wy)},${f(imuData.wz)},${f(imuData.ax)},${f(imuData.ay)},${f(imuData.az)}';

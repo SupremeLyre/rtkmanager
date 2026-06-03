@@ -31,12 +31,27 @@ class ImuData {
 
   // 0x50: UTC时间
   int? utcMsec;
+  int? utcUsec;
   int? utcYear;
   int? utcMonth;
   int? utcDay;
   int? utcHour;
   int? utcMin;
   int? utcSec;
+
+  int? get utcSubsecondUsec {
+    if (utcUsec != null) return utcUsec;
+    if (utcMsec != null) return utcMsec! * 1000;
+    return null;
+  }
+
+  int get utcDateTimeMsec => (utcSubsecondUsec ?? 0) ~/ 1000;
+  int get utcDateTimeUsec => (utcSubsecondUsec ?? 0) % 1000;
+
+  bool get isUtcWholeSecond {
+    final usec = utcSubsecondUsec;
+    return usec != null && usec % 1000000 == 0;
+  }
 
   // 0x68: 位置
   double? lat; // 度
@@ -67,15 +82,57 @@ class ImuData {
     return val.toString().padLeft(3, '0');
   }
 
+  bool _hasAll(List<Object?> values) {
+    return values.every((value) => value != null);
+  }
+
+  String get utcFractionText {
+    if (utcUsec != null) return utcUsec!.toString().padLeft(6, '0');
+    return _d3(utcMsec);
+  }
+
   @override
   String toString() {
-    return '{UTC: $utcYear-${_d2(utcMonth)}-${_d2(utcDay)} ${_d2(utcHour)}:${_d2(utcMin)}:${_d2(utcSec)}.${_d3(utcMsec)}],'
-        'Gyro: [ ${_f(wx, 6, 10)}, ${_f(wy, 6, 10)}, ${_f(wz, 6, 10)} ], '
-        'Acc: [ ${_f(ax, 6, 9)}, ${_f(ay, 6, 9)}, ${_f(az, 6, 9)} ], '
-        'Pos: [ Lat:${_f(lat, 10, 14)}, Lon:${_f(lon, 10, 14)}, Alt:${_f(alt, 3, 8)} ], '
-        'Vel: [ E:${_f(ve, 3, 7)}, N:${_f(vn, 3, 7)}, U:${_f(vu, 3, 7)} ], '
-        'Euler: [ P:${_f(pitch, 6, 11)}, R:${_f(roll, 6, 11)}, Y:${_f(yaw, 6, 11)} ], '
-        'Status: [FS:${fusionState ?? 'N/A'}, GNSS:${gnssState ?? 'N/A'}]}';
+    final parts = <String>[];
+
+    if (_hasAll([utcYear, utcMonth, utcDay, utcHour, utcMin, utcSec])) {
+      parts.add(
+        'UTC: $utcYear-${_d2(utcMonth)}-${_d2(utcDay)} ${_d2(utcHour)}:${_d2(utcMin)}:${_d2(utcSec)}.$utcFractionText',
+      );
+    }
+    if (tempImu != null) {
+      parts.add('Temp: ${_f(tempImu, 2, 7)} C');
+    }
+    if (_hasAll([wx, wy, wz])) {
+      parts.add(
+        'Gyro: [ ${_f(wx, 6, 10)}, ${_f(wy, 6, 10)}, ${_f(wz, 6, 10)} ]',
+      );
+    }
+    if (_hasAll([ax, ay, az])) {
+      parts.add(
+        'Acc: [ ${_f(ax, 6, 9)}, ${_f(ay, 6, 9)}, ${_f(az, 6, 9)} ]',
+      );
+    }
+    if (_hasAll([lat, lon, alt])) {
+      parts.add(
+        'Pos: [ Lat:${_f(lat, 10, 14)}, Lon:${_f(lon, 10, 14)}, Alt:${_f(alt, 3, 8)} ]',
+      );
+    }
+    if (_hasAll([ve, vn, vu])) {
+      parts.add(
+        'Vel: [ E:${_f(ve, 3, 7)}, N:${_f(vn, 3, 7)}, U:${_f(vu, 3, 7)} ]',
+      );
+    }
+    if (_hasAll([pitch, roll, yaw])) {
+      parts.add(
+        'Euler: [ P:${_f(pitch, 6, 11)}, R:${_f(roll, 6, 11)}, Y:${_f(yaw, 6, 11)} ]',
+      );
+    }
+    if (_hasAll([fusionState, gnssState])) {
+      parts.add('Status: [FS:$fusionState, GNSS:$gnssState]');
+    }
+
+    return '{${parts.join(', ')}}';
   }
 }
 
@@ -208,6 +265,12 @@ class ImuDataParser {
                 imuData.utcHour = bd.getUint8(offset + 8);
                 imuData.utcMin = bd.getUint8(offset + 9);
                 imuData.utcSec = bd.getUint8(offset + 10);
+              }
+              break;
+            case 0x51: // UTC微秒扩展
+              if (len == 4) {
+                final usec = bd.getUint32(offset, Endian.little);
+                imuData.utcUsec = usec > 999999 ? 999999 : usec;
               }
               break;
             case 0x68: // 位置
