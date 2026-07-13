@@ -173,6 +173,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           dop3: 0,
           satellites: int.tryParse(parts[7]) ?? 0,
           altitude: double.tryParse(parts[9]) ?? 0.0,
+          differentialAge: double.tryParse(parts[13]),
           type: PointType.gga,
         );
 
@@ -852,6 +853,16 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                           fontSize: 12,
                         ),
                       ),
+                      if ([2, 4, 5].contains(_currentInfo!.status)) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          "Diff Age: ${_currentInfo!.differentialAge?.toStringAsFixed(1) ?? '--'} s",
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
                     ],
                   ],
                 ),
@@ -1109,6 +1120,7 @@ class PositionInfo {
   final double dop3;
   final int satellites;
   final double altitude;
+  final double? differentialAge;
   final PointType type;
 
   PositionInfo({
@@ -1122,6 +1134,7 @@ class PositionInfo {
     required this.dop3,
     this.satellites = 0,
     this.altitude = 0.0,
+    this.differentialAge,
     this.type = PointType.pppsol,
   });
 }
