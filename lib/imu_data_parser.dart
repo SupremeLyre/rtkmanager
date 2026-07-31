@@ -67,6 +67,14 @@ class ImuData {
   int? fusionState;
   int? gnssState;
 
+  bool get hasRawImu =>
+      ax != null ||
+      ay != null ||
+      az != null ||
+      wx != null ||
+      wy != null ||
+      wz != null;
+
   String _f(double? val, int fractionDigits, int width) {
     if (val == null) return 'N/A'.padLeft(width);
     return val.toStringAsFixed(fractionDigits).padLeft(width);

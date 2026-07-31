@@ -86,7 +86,7 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
         final file = File(item.path);
         final totalBytes = await file.length();
         int processedBytes = 0;
-        int lastUpdateBytes = 0;
+        int lastFlushBytes = 0;
 
         final lastSep = item.path.lastIndexOf(Platform.pathSeparator);
         final fileName = lastSep != -1
@@ -98,6 +98,7 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
         final outFile = File(outPath);
 
         final sink = outFile.openWrite();
+        final outputBuffer = StringBuffer();
 
         String header = "GPSWeek,GPSSow,gx,gy,gz,ax,ay,az";
         if (_outputTid) header += ",tid";
@@ -107,7 +108,7 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
         if (_outputVel) header += ",ve,vn,vu";
         if (_outputStatus) header += ",fusionState,gnssState";
         if (_outputTemp) header += ",tempImu";
-        sink.writeln(header);
+        outputBuffer.writeln(header);
 
         String f(double? val) {
           return (val ?? 0.0).toStringAsFixed(6).padLeft(10);
@@ -122,6 +123,10 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
 
         await for (final chunk in file.openRead()) {
           parser.parseData(chunk, (imuData) {
+            // 延迟输出的组合导航结果帧不含原始 IMU 数据，且携带的是
+            // 历史时刻。不能将它写成全零的原始采样行或用于 TID 补偿。
+            if (!imuData.hasRawImu) return;
+
             int year = imuData.utcYear ?? 0;
             int month = imuData.utcMonth ?? 0;
             int day = imuData.utcDay ?? 0;
@@ -255,23 +260,33 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
                   (v ?? 0.0).toStringAsFixed(2).padLeft(7);
               row += ',${tempF(imuData.tempImu)}';
             }
-            sink.writeln(row);
+            outputBuffer.writeln(row);
           }, broadcast: false);
 
           processedBytes += chunk.length;
-          // 防止频繁刷新导致界面卡顿，每读取一定量或完成时更新一次
-          if (processedBytes - lastUpdateBytes > 1024 * 512 ||
+          // 批量写出并等待缓冲区清空，避免读取结束后集中等待大量落盘。
+          if (processedBytes - lastFlushBytes >= 1024 * 512 ||
               processedBytes == totalBytes) {
-            lastUpdateBytes = processedBytes;
+            if (outputBuffer.length > 0) {
+              sink.write(outputBuffer.toString());
+              outputBuffer.clear();
+            }
+            await sink.flush();
+            lastFlushBytes = processedBytes;
             setState(() {
-              item.progress = totalBytes > 0
-                  ? (processedBytes / totalBytes)
+              final progress = totalBytes > 0
+                  ? processedBytes / totalBytes
                   : 0.0;
+              // 只有文件关闭并确认全部写入后才显示 100%。
+              item.progress = progress >= 1.0 ? 0.99 : progress;
             });
             await Future.delayed(Duration.zero);
           }
         }
 
+        if (outputBuffer.length > 0) {
+          sink.write(outputBuffer.toString());
+        }
         await sink.flush();
         await sink.close();
 

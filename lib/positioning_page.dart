@@ -1,12 +1,14 @@
 import 'dart:io';
 import 'dart:async';
 import 'dart:math';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:file_picker/file_picker.dart';
 import 'serial_service.dart';
 import 'imu_data_parser.dart';
+import 'gga_sentence_extractor.dart';
 
 class MobilePositioningPage extends StatefulWidget {
   final VoidCallback onOpenDrawer;
@@ -21,6 +23,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   final MapController _mapController = MapController();
   final List<PositionHistoryPoint> _points = [];
   StreamSubscription<String>? _subscription;
+  StreamSubscription<Uint8List>? _ggaSubscription;
   StreamSubscription<ImuData>? _imuSubscription;
   bool _autoCenter = true;
   bool _showTimeline = true;
@@ -40,14 +43,26 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   @override
   void initState() {
     super.initState();
-    // Subscribe to the serial service line stream
-    _subscription = SerialService().lineStream.listen(_handleLine);
+    final serialService = SerialService();
+    _subscription = serialService.lineStream.listen((line) {
+      // GGA is extracted from raw bytes below so clean text lines are not
+      // displayed twice. Keep the line stream for PPPSOL and GBGGA.
+      if (line.startsWith('\$GNGGA') || line.startsWith('\$GPGGA')) return;
+      _handleLine(line);
+    });
+    final ggaExtractor = GgaSentenceExtractor();
+    _ggaSubscription = serialService.dataStream.listen((data) {
+      for (final gga in ggaExtractor.add(data)) {
+        _handleLine(gga);
+      }
+    });
     _imuSubscription = ImuDataParser.imuDataStream.listen(_handleImuData);
   }
 
   @override
   void dispose() {
     _subscription?.cancel();
+    _ggaSubscription?.cancel();
     _imuSubscription?.cancel();
     _mapController.dispose();
     super.dispose();
