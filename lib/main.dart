@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:io';
+import 'package:screen_retriever/screen_retriever.dart';
 import 'package:window_manager/window_manager.dart';
 import 'home_page.dart';
 
@@ -11,8 +12,25 @@ void main() async {
   if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
     try {
       await windowManager.ensureInitialized();
-      const WindowOptions windowOptions = WindowOptions(
-        size: Size(800, 480),
+      const desiredSize = Size(1000, 720);
+      Size initialSize = const Size(800, 480);
+      try {
+        final display = await screenRetriever.getPrimaryDisplay();
+        final availableSize = display.visibleSize ?? display.size;
+        initialSize = Size(
+          availableSize.width < desiredSize.width
+              ? availableSize.width
+              : desiredSize.width,
+          availableSize.height < desiredSize.height
+              ? availableSize.height
+              : desiredSize.height,
+        );
+      } catch (_) {
+        // 无法读取屏幕工作区时维持原有启动尺寸。
+      }
+
+      final WindowOptions windowOptions = WindowOptions(
+        size: initialSize,
         minimumSize: Size(400, 300),
         center: true,
         backgroundColor: Colors.transparent,

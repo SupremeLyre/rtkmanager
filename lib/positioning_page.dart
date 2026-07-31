@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
@@ -20,6 +21,30 @@ class MobilePositioningPage extends StatefulWidget {
 }
 
 class _MobilePositioningPageState extends State<MobilePositioningPage> {
+  static const int _maxMapZoom = 18;
+  static const ColorFilter _mutedMapColorFilter = ColorFilter.matrix([
+    0.15945,
+    0.5364,
+    0.05415,
+    0,
+    55,
+    0.15945,
+    0.5364,
+    0.05415,
+    0,
+    55,
+    0.15945,
+    0.5364,
+    0.05415,
+    0,
+    55,
+    0,
+    0,
+    0,
+    1,
+    0,
+  ]);
+
   final MapController _mapController = MapController();
   final List<PositionHistoryPoint> _points = [];
   StreamSubscription<String>? _subscription;
@@ -32,6 +57,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   bool _isImportMode = false;
   bool _isImporting = false;
   double _importProgress = 0.0;
+  int _trajectoryDetailLevel = 2;
   PositionInfo? _currentInfo;
   ImuData? _currentImuInfo;
   int? _selectedIndex;
@@ -288,46 +314,100 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     if (pointType == PointType.gga) {
       switch (status) {
         case 1:
-          return Colors.orange; // SPP
+          return Colors.red.shade700; // SPP
         case 2:
-          return Colors.purple; // DGPS
+          return Colors.purple.shade600; // DGPS
         case 4:
-          return Colors.teal; // RTK FIX
+          return Colors.green.shade800; // RTK FIX
         case 5:
-          return Colors.lightGreen.shade700; // RTK FLOAT
+          return Colors.deepOrange.shade700; // RTK FLOAT
         default:
-          return Colors.grey;
+          return Colors.grey.shade600;
       }
     }
     if (isImu) {
       switch (status) {
         case 1:
-          return Colors.orange; // SPP
+          return Colors.pink.shade700; // SPP
         case 2:
-          return Colors.purple; // DGPS
+          return Colors.deepPurpleAccent.shade200; // DGPS
         case 4:
-          return Colors.teal; // RTK FIX
+          return Colors.cyan.shade800; // RTK FIX
         case 5:
-          return Colors.lightGreen.shade700; // RTK FLOAT
+          return Colors.amber.shade900; // RTK FLOAT
         case 6:
-          return Colors.lightBlue; // DR (纯惯导推算)
+          return Colors.lightBlueAccent.shade400; // DR (纯惯导推算)
         default:
-          return Colors.grey;
+          return Colors.blueGrey.shade500;
       }
     } else {
       switch (status) {
-        case 2:
-          return Colors.indigo;
+        case 2: // SPP with Doppler-pred
+          return Colors.grey.shade900;
         case 3: // SPP
-          return Colors.pink.shade300;
+          return Colors.yellowAccent.shade700;
         case 4: // PPP
-          return Colors.blue;
-        case 5: // Prediction
-          return Colors.red;
+          return Colors.blue.shade900;
+        case 5: // SPP with TDCP-pred
+          return Colors.greenAccent.shade400;
         default:
-          return Colors.grey;
+          return Colors.grey.shade600;
       }
     }
+  }
+
+  void _handleMapPositionChanged(MapCamera camera, bool _) {
+    final nextLevel = camera.zoom < 14
+        ? 0
+        : camera.zoom < 17
+        ? 1
+        : 2;
+    if (nextLevel == _trajectoryDetailLevel) return;
+    setState(() => _trajectoryDetailLevel = nextLevel);
+  }
+
+  Marker _buildTrajectoryMarker(PositionHistoryPoint point) {
+    final shape = switch (point.type) {
+      PointType.gga => _TrajectoryMarkerShape.circle,
+      PointType.imu => _TrajectoryMarkerShape.square,
+      PointType.pppsol => _TrajectoryMarkerShape.cross,
+    };
+    final baseSize = switch (point.type) {
+      PointType.gga => 6.0,
+      PointType.imu => 5.0,
+      PointType.pppsol => 7.0,
+    };
+    final sizeScale = switch (_trajectoryDetailLevel) {
+      0 => 0.4,
+      1 => 0.65,
+      _ => 1.0,
+    };
+    final fillOpacity = switch (_trajectoryDetailLevel) {
+      0 => 0.55,
+      1 => 0.72,
+      _ => 0.88,
+    };
+    final showOutline = _trajectoryDetailLevel == 2;
+    final size = baseSize * sizeScale;
+
+    return Marker(
+      point: point.location,
+      width: size,
+      height: size,
+      child: CustomPaint(
+        painter: _TrajectoryPointPainter(
+          shape: shape,
+          color: _getColorForStatus(
+            point.status,
+            point.isImu,
+            pointType: point.type,
+          ),
+          borderColor: showOutline ? Colors.white : Colors.transparent,
+          strokeWidth: showOutline ? 0.5 : 0,
+          fillOpacity: fillOpacity,
+        ),
+      ),
+    );
   }
 
   String _getStatusText(int status, bool isImu, {PointType? pointType}) {
@@ -374,6 +454,167 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           return "UNKNOWN ($status)";
       }
     }
+  }
+
+  Widget _buildLegendBar() {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textColor = colorScheme.onSurface;
+
+    Widget legendItem(String label, Color color, _TrajectoryMarkerShape shape) {
+      return Padding(
+        padding: const EdgeInsets.only(right: 10),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox.square(
+              dimension: 12,
+              child: CustomPaint(
+                painter: _TrajectoryPointPainter(
+                  shape: shape,
+                  color: color,
+                  borderColor: textColor.withValues(alpha: 0.55),
+                  strokeWidth: 0.8,
+                ),
+              ),
+            ),
+            const SizedBox(width: 4),
+            Text(label, style: TextStyle(color: textColor, fontSize: 11)),
+          ],
+        ),
+      );
+    }
+
+    Widget legendGroup(
+      String title,
+      _TrajectoryMarkerShape shape,
+      List<(String, Color)> items,
+    ) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            title,
+            style: TextStyle(
+              color: textColor,
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(width: 10),
+          for (final item in items) legendItem(item.$1, item.$2, shape),
+        ],
+      );
+    }
+
+    Widget divider() {
+      return VerticalDivider(
+        width: 16,
+        indent: 8,
+        endIndent: 8,
+        color: textColor.withValues(alpha: 0.25),
+      );
+    }
+
+    Widget selectedItem() {
+      return Padding(
+        padding: const EdgeInsets.only(right: 10),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 12,
+              height: 12,
+              decoration: BoxDecoration(
+                color: Colors.transparent,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.yellow.shade700, width: 2),
+              ),
+            ),
+            const SizedBox(width: 4),
+            Text('当前选中', style: TextStyle(color: textColor, fontSize: 11)),
+          ],
+        ),
+      );
+    }
+
+    return Material(
+      color: colorScheme.surface,
+      elevation: 4,
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 40,
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            child: Row(
+              children: [
+                legendGroup('GGA', _TrajectoryMarkerShape.circle, [
+                  (
+                    'SPP',
+                    _getColorForStatus(1, false, pointType: PointType.gga),
+                  ),
+                  (
+                    'DGPS',
+                    _getColorForStatus(2, false, pointType: PointType.gga),
+                  ),
+                  (
+                    'RTK FIX',
+                    _getColorForStatus(4, false, pointType: PointType.gga),
+                  ),
+                  (
+                    'RTK FLOAT',
+                    _getColorForStatus(5, false, pointType: PointType.gga),
+                  ),
+                ]),
+                divider(),
+                legendGroup('Fusion', _TrajectoryMarkerShape.square, [
+                  (
+                    'SPP',
+                    _getColorForStatus(1, true, pointType: PointType.imu),
+                  ),
+                  (
+                    'DGPS',
+                    _getColorForStatus(2, true, pointType: PointType.imu),
+                  ),
+                  (
+                    'RTK FIX',
+                    _getColorForStatus(4, true, pointType: PointType.imu),
+                  ),
+                  (
+                    'RTK FLOAT',
+                    _getColorForStatus(5, true, pointType: PointType.imu),
+                  ),
+                  ('DR', _getColorForStatus(6, true, pointType: PointType.imu)),
+                ]),
+                divider(),
+                legendGroup('PPPSOL', _TrajectoryMarkerShape.cross, [
+                  (
+                    'DOPPLER',
+                    _getColorForStatus(2, false, pointType: PointType.pppsol),
+                  ),
+                  (
+                    'SPP',
+                    _getColorForStatus(3, false, pointType: PointType.pppsol),
+                  ),
+                  (
+                    'PPP',
+                    _getColorForStatus(4, false, pointType: PointType.pppsol),
+                  ),
+                  (
+                    'TDCP',
+                    _getColorForStatus(5, false, pointType: PointType.pppsol),
+                  ),
+                ]),
+                divider(),
+                legendItem('未知', Colors.grey, _TrajectoryMarkerShape.circle),
+                selectedItem(),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _importFile() async {
@@ -700,6 +941,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           const SizedBox(width: 4),
         ],
       ),
+      bottomNavigationBar: _buildLegendBar(),
       body: Stack(
         children: [
           FlutterMap(
@@ -708,37 +950,30 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
               // Default center (Wuhan as per example coords)
               initialCenter: const LatLng(30.52845181, 114.35696878),
               initialZoom: 17,
+              maxZoom: _maxMapZoom.toDouble(),
+              onPositionChanged: _handleMapPositionChanged,
             ),
             children: [
               TileLayer(
                 urlTemplate: _amapUrl,
                 userAgentPackageName: 'com.example.rtkmanager',
                 subdomains: const ['01', '02', '03', '04'], // usually wprd01-04
+                maxNativeZoom: _maxMapZoom,
+                tileBuilder: (_, tileWidget, _) => ColorFiltered(
+                  colorFilter: _mutedMapColorFilter,
+                  child: tileWidget,
+                ),
               ),
-              // Using CircleMarkers for points as they are more performant for many points than Icons
-              CircleLayer(
-                circles: _points
+              // The filtered list retains _points' arrival order. Later data is
+              // painted on top of earlier data without changing its semantics.
+              MarkerLayer(
+                markers: _points
                     .where((p) {
                       if (p.type == PointType.pppsol) return _showPppsol;
                       if (p.type == PointType.gga) return _showGga;
                       return true; // imu
                     })
-                    .map(
-                      (p) => CircleMarker(
-                        point: p.location,
-                        color: _getColorForStatus(
-                          p.status,
-                          p.isImu,
-                          pointType: p.type,
-                        ).withValues(alpha: 0.8),
-                        borderStrokeWidth: 0.5,
-                        borderColor: Colors.white,
-                        radius: p.type == PointType.gga
-                            ? 3
-                            : 2, // slightly larger for GGA
-                        useRadiusInMeter: false,
-                      ),
-                    )
+                    .map(_buildTrajectoryMarker)
                     .toList(),
               ),
               if (visibleIndices.isNotEmpty)
@@ -746,10 +981,10 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                   circles: [
                     CircleMarker(
                       point: _points[visibleIndices[currentSliderPos]].location,
-                      color: Colors.yellow.withValues(alpha: 0.8),
-                      borderStrokeWidth: 1.5,
-                      borderColor: Colors.black,
-                      radius: 6,
+                      color: Colors.transparent,
+                      borderStrokeWidth: 2,
+                      borderColor: Colors.yellow.shade700,
+                      radius: 7,
                     ),
                   ],
                 ),
@@ -1204,6 +1439,84 @@ class CoordinateConverter {
     ret +=
         (150.0 * sin(x / 12.0 * pi) + 300.0 * sin(x / 30.0 * pi)) * 2.0 / 3.0;
     return ret;
+  }
+}
+
+enum _TrajectoryMarkerShape { circle, square, cross }
+
+class _TrajectoryPointPainter extends CustomPainter {
+  final _TrajectoryMarkerShape shape;
+  final Color color;
+  final Color borderColor;
+  final double strokeWidth;
+  final double fillOpacity;
+
+  const _TrajectoryPointPainter({
+    required this.shape,
+    required this.color,
+    required this.borderColor,
+    this.strokeWidth = 0.8,
+    this.fillOpacity = 0.88,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final inset = strokeWidth / 2;
+    final rect = Rect.fromLTWH(
+      inset,
+      inset,
+      size.width - strokeWidth,
+      size.height - strokeWidth,
+    );
+    final path = ui.Path();
+
+    switch (shape) {
+      case _TrajectoryMarkerShape.circle:
+        path.addOval(rect);
+      case _TrajectoryMarkerShape.square:
+        path.addRect(rect);
+      case _TrajectoryMarkerShape.cross:
+        final centerX = size.width / 2;
+        final centerY = size.height / 2;
+        final halfBarWidth = size.shortestSide * 0.14;
+        path
+          ..moveTo(centerX - halfBarWidth, inset)
+          ..lineTo(centerX + halfBarWidth, inset)
+          ..lineTo(centerX + halfBarWidth, centerY - halfBarWidth)
+          ..lineTo(size.width - inset, centerY - halfBarWidth)
+          ..lineTo(size.width - inset, centerY + halfBarWidth)
+          ..lineTo(centerX + halfBarWidth, centerY + halfBarWidth)
+          ..lineTo(centerX + halfBarWidth, size.height - inset)
+          ..lineTo(centerX - halfBarWidth, size.height - inset)
+          ..lineTo(centerX - halfBarWidth, centerY + halfBarWidth)
+          ..lineTo(inset, centerY + halfBarWidth)
+          ..lineTo(inset, centerY - halfBarWidth)
+          ..lineTo(centerX - halfBarWidth, centerY - halfBarWidth)
+          ..close();
+    }
+
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = color.withValues(alpha: fillOpacity)
+        ..style = PaintingStyle.fill,
+    );
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = borderColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = strokeWidth,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _TrajectoryPointPainter oldDelegate) {
+    return shape != oldDelegate.shape ||
+        color != oldDelegate.color ||
+        borderColor != oldDelegate.borderColor ||
+        strokeWidth != oldDelegate.strokeWidth ||
+        fillOpacity != oldDelegate.fillOpacity;
   }
 }
 
