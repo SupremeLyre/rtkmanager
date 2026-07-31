@@ -235,17 +235,18 @@ class _CircleButtonState extends State<_CircleButton> {
           alignment: Alignment.center,
           child: _isHovering
               ? (widget.customIcon ??
-                  (widget.icon != null
-                      ? Icon(
-                          widget.icon,
-                          size: 9,
-                          color: const Color(0xFF4D0000).withValues(alpha: 0.6),
-                        )
-                      : null))
+                    (widget.icon != null
+                        ? Icon(
+                            widget.icon,
+                            size: 9,
+                            color: const Color(
+                              0xFF4D0000,
+                            ).withValues(alpha: 0.6),
+                          )
+                        : null))
               : null,
         ),
       ),
     );
   }
 }
-

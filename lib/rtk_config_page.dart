@@ -6,6 +6,7 @@ import 'package:flutter_libserialport/flutter_libserialport.dart';
 import 'serial_service.dart';
 import 'ntrip_service.dart';
 import 'imu_data_parser.dart';
+import 'gga_sentence_extractor.dart';
 
 class RtkConfigPage extends StatefulWidget {
   final VoidCallback onOpenDrawer;
@@ -427,11 +428,12 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
     }
 
     String lastSentTime = "";
+    final ggaExtractor = GgaSentenceExtractor();
 
-    _serialSubscription = _ggaSerialService!.lineStream.listen((line) {
-      if (line.startsWith("\$GNGGA") || line.startsWith("\$GPGGA")) {
-        if (line.contains("*")) {
-          List<String> parts = line.split(',');
+    _serialSubscription = _ggaSerialService!.dataStream.listen((data) {
+      for (final gga in ggaExtractor.add(data)) {
+        if (gga.contains("*")) {
+          List<String> parts = gga.split(',');
           if (parts.length > 1) {
             String timeStr = parts[1];
             // 只发送整秒，并且避免同一秒内发送多次（比如同时收到 GPGGA 和 GNGGA）
@@ -440,7 +442,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                 (!timeStr.contains('.') ||
                     RegExp(r'\.0+$').hasMatch(timeStr))) {
               lastSentTime = timeStr;
-              _ntripService.sendGNGGA(line);
+              _ntripService.sendGNGGA(gga);
             }
           }
         }

@@ -62,9 +62,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   }
 
   void _handleImuData(ImuData data) {
-    if (data.utcYear != null &&
-        data.utcYear! > 2000 &&
-        data.isUtcWholeSecond) {
+    if (data.utcYear != null && data.utcYear! > 2000 && data.isUtcWholeSecond) {
       if (data.lat != null &&
           data.lon != null &&
           data.lat! != 0 &&
@@ -281,7 +279,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         case 4:
           return Colors.teal; // RTK FIX
         case 5:
-          return Colors.amber; // RTK FLOAT
+          return Colors.lightGreen.shade700; // RTK FLOAT
         default:
           return Colors.grey;
       }
@@ -289,22 +287,24 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     if (isImu) {
       switch (status) {
         case 1:
-          return Colors.red; // SPP
+          return Colors.orange; // SPP
         case 2:
-          return Colors.pink; // DGPS
+          return Colors.purple; // DGPS
         case 4:
-          return Colors.green; // RTK FIX
+          return Colors.teal; // RTK FIX
         case 5:
-          return Colors.brown; // RTK FLOAT
+          return Colors.lightGreen.shade700; // RTK FLOAT
         case 6:
-          return Colors.blue; // DR (纯惯导推算)
+          return Colors.lightBlue; // DR (纯惯导推算)
         default:
           return Colors.grey;
       }
     } else {
       switch (status) {
+        case 2:
+          return Colors.indigo;
         case 3: // SPP
-          return Colors.pink;
+          return Colors.pink.shade300;
         case 4: // PPP
           return Colors.blue;
         case 5: // Prediction
@@ -347,12 +347,14 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
       }
     } else {
       switch (status) {
+        case 2:
+          return "DOPPLER (2)";
         case 3:
           return "SPP (3)";
         case 4:
           return "PPP (4)";
         case 5:
-          return "PRED (5)";
+          return "TDCP (5)";
         default:
           return "UNKNOWN ($status)";
       }
