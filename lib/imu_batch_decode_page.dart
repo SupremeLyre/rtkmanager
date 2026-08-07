@@ -39,6 +39,25 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
   bool _outputStatus = false;
   bool _outputTemp = false;
   bool _outputTid = false;
+  bool _decodeOnlyNavigationFrames = true;
+
+  bool _hasNavigationPayload(ImuData data) {
+    return data.lat != null ||
+        data.lon != null ||
+        data.alt != null ||
+        data.ve != null ||
+        data.vn != null ||
+        data.vu != null ||
+        data.fusionState != null ||
+        data.gnssState != null ||
+        data.pitch != null ||
+        data.roll != null ||
+        data.yaw != null ||
+        data.q0 != null ||
+        data.q1 != null ||
+        data.q2 != null ||
+        data.q3 != null;
+  }
 
   Future<void> _pickFiles() async {
     FilePickerResult? result = await FilePicker.platform.pickFiles(
@@ -100,7 +119,9 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
         final sink = outFile.openWrite();
         final outputBuffer = StringBuffer();
 
-        String header = "GPSWeek,GPSSow,gx,gy,gz,ax,ay,az";
+        String header = _decodeOnlyNavigationFrames
+            ? "GPSWeek,GPSSow"
+            : "GPSWeek,GPSSow,gx,gy,gz,ax,ay,az";
         if (_outputTid) header += ",tid";
         if (_outputEuler) header += ",pitch,roll,yaw";
         if (_outputQuat) header += ",q0,q1,q2,q3";
@@ -123,18 +144,24 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
 
         await for (final chunk in file.openRead()) {
           parser.parseData(chunk, (imuData) {
-            // 延迟输出的组合导航结果帧不含原始 IMU 数据，且携带的是
-            // 历史时刻。不能将它写成全零的原始采样行或用于 TID 补偿。
-            if (!imuData.hasRawImu) return;
+            final bool hasRawImuFrame = imuData.hasRawImu;
+            final bool hasNavPayload = _hasNavigationPayload(imuData);
+            if (_decodeOnlyNavigationFrames) {
+              if (!hasNavPayload) return;
+            } else {
+              if (!hasRawImuFrame && !hasNavPayload) return;
+            }
 
-            int year = imuData.utcYear ?? 0;
-            int month = imuData.utcMonth ?? 0;
-            int day = imuData.utcDay ?? 0;
-            int hour = imuData.utcHour ?? 0;
-            int min = imuData.utcMin ?? 0;
-            int sec = imuData.utcSec ?? 0;
-            int msec = imuData.utcDateTimeMsec;
-            int usec = imuData.utcDateTimeUsec;
+            final ImuData outputData = imuData;
+
+            int year = outputData.utcYear ?? 0;
+            int month = outputData.utcMonth ?? 0;
+            int day = outputData.utcDay ?? 0;
+            int hour = outputData.utcHour ?? 0;
+            int min = outputData.utcMin ?? 0;
+            int sec = outputData.utcSec ?? 0;
+            int msec = outputData.utcDateTimeMsec;
+            int usec = outputData.utcDateTimeUsec;
 
             if (year < 2026 || month == 0 || day == 0) return;
 
@@ -155,7 +182,8 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
             );
             DateTime compDt = origDt;
 
-            if (_useTidCompensation &&
+            if (hasRawImuFrame &&
+                _useTidCompensation &&
                 lastTid != -1 &&
                 lastOrigDt != null &&
                 lastCompDt != null) {
@@ -204,9 +232,11 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
               }
             }
 
-            lastTid = imuData.tid ?? 0;
-            lastOrigDt = origDt;
-            lastCompDt = compDt;
+            if (hasRawImuFrame) {
+              lastTid = imuData.tid ?? 0;
+              lastOrigDt = origDt;
+              lastCompDt = compDt;
+            }
 
             // UTC转GPS周和周内秒 (包含18秒闰秒补偿)
             DateTime gpsEpoch = DateTime.utc(1980, 1, 6);
@@ -219,22 +249,23 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
 
             String timeStr = '$gpsWeek,${gpsSow.toStringAsFixed(6)}';
 
-            String row =
-                '$timeStr,${f(imuData.wx)},${f(imuData.wy)},${f(imuData.wz)},${f(imuData.ax)},${f(imuData.ay)},${f(imuData.az)}';
+            String row = _decodeOnlyNavigationFrames
+                ? timeStr
+                : '$timeStr,${f(outputData.wx)},${f(outputData.wy)},${f(outputData.wz)},${f(outputData.ax)},${f(outputData.ay)},${f(outputData.az)}';
             if (_outputTid) {
-              row += ',${(imuData.tid ?? 0).toString().padLeft(5, '0')}';
+              row += ',${(outputData.tid ?? 0).toString().padLeft(5, '0')}';
             }
             if (_outputEuler) {
               String eulerF(double? v) =>
                   (v ?? 0.0).toStringAsFixed(5).padLeft(11);
               row +=
-                  ',${eulerF(imuData.pitch)},${eulerF(imuData.roll)},${eulerF(imuData.yaw)}';
+                  ',${eulerF(outputData.pitch)},${eulerF(outputData.roll)},${eulerF(outputData.yaw)}';
             }
             if (_outputQuat) {
               String quatF(double? v) =>
                   (v ?? 0.0).toStringAsFixed(6).padLeft(9);
               row +=
-                  ',${quatF(imuData.q0)},${quatF(imuData.q1)},${quatF(imuData.q2)},${quatF(imuData.q3)}';
+                  ',${quatF(outputData.q0)},${quatF(outputData.q1)},${quatF(outputData.q2)},${quatF(outputData.q3)}';
             }
             if (_outputPos) {
               String latF(double? v) =>
@@ -244,21 +275,22 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
               String altF(double? v) =>
                   (v ?? 0.0).toStringAsFixed(3).padLeft(9);
               row +=
-                  ',${latF(imuData.lat)},${lonF(imuData.lon)},${altF(imuData.alt)}';
+                  ',${latF(outputData.lat)},${lonF(outputData.lon)},${altF(outputData.alt)}';
             }
             if (_outputVel) {
               String velF(double? v) =>
                   (v ?? 0.0).toStringAsFixed(3).padLeft(7);
               row +=
-                  ',${velF(imuData.ve)},${velF(imuData.vn)},${velF(imuData.vu)}';
+                  ',${velF(outputData.ve)},${velF(outputData.vn)},${velF(outputData.vu)}';
             }
             if (_outputStatus) {
-              row += ',${imuData.fusionState ?? 0},${imuData.gnssState ?? 0}';
+              row +=
+                  ',${outputData.fusionState ?? 0},${outputData.gnssState ?? 0}';
             }
             if (_outputTemp) {
               String tempF(double? v) =>
                   (v ?? 0.0).toStringAsFixed(2).padLeft(7);
-              row += ',${tempF(imuData.tempImu)}';
+              row += ',${tempF(outputData.tempImu)}';
             }
             outputBuffer.writeln(row);
           }, broadcast: false);
@@ -364,11 +396,25 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Checkbox(
+                          value: _decodeOnlyNavigationFrames,
+                          onChanged: _isDecoding
+                              ? null
+                              : (v) => setState(
+                                  () => _decodeOnlyNavigationFrames = v ?? true,
+                                ),
+                        ),
+                        const Text('只解码组合导航结果'),
+                      ],
+                    ),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Checkbox(
                           value: _useTidCompensation,
                           onChanged: _isDecoding
                               ? null
                               : (v) => setState(
-                                  () => _useTidCompensation = v ?? true,
+                                  () => _useTidCompensation = v ?? false,
                                 ),
                         ),
                         const Text('使用TID补偿时间戳'),
