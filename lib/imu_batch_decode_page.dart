@@ -149,7 +149,8 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
             if (_decodeOnlyNavigationFrames) {
               if (!hasNavPayload) return;
             } else {
-              if (!hasRawImuFrame && !hasNavPayload) return;
+              // 导航结果可能延迟独立到达，不能将缺失的六轴数据补零输出。
+              if (!hasRawImuFrame) return;
             }
 
             final ImuData outputData = imuData;
