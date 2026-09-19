@@ -569,7 +569,13 @@ class SerialDebugContentState extends State<SerialDebugContent>
 
   Future<void> _refreshPorts() async {
     // 使用 compute 将耗时的串口扫描操作放到后台 isolate 执行，避免阻塞 UI 线程
-    final ports = await compute(_getKnownPorts, null);
+    List<String> ports = [];
+    try {
+      ports = await compute(_getKnownPorts, null);
+    } catch (e) {
+      if (!mounted) return;
+      _processIncomingData("[错误] 无法获取串口列表: $e\n");
+    }
 
     if (!mounted) return;
 

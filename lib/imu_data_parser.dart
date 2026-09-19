@@ -8,15 +8,25 @@ class ImuData {
   // 0x01: IMU温度
   double? tempImu;
 
-  // 0x10: 加速度 (m/s^2)
+  // 0x10: 加速度 (g，匹配 sys_gnss2 固件)
   double? ax;
   double? ay;
   double? az;
 
-  // 0x20: 角速度 (rad/s)
+  // 0x20: 角速度 (deg/s，匹配 sys_gnss2 固件)
   double? wx;
   double? wy;
   double? wz;
+
+  // 0x30: 原始磁场 (µT)，3 × int32 × 1e-3。
+  double? mx;
+  double? my;
+  double? mz;
+  bool get hasMag => mx != null && my != null && mz != null;
+
+  // 0x52: GPS 周 + 周内纳秒，优先于旧 UTC/TID 推算。
+  int? gpsWeek;
+  int? gpsTowNanos;
 
   // 0x40: 欧拉角 (deg)
   double? pitch;
@@ -117,9 +127,10 @@ class ImuData {
       );
     }
     if (_hasAll([ax, ay, az])) {
-      parts.add(
-        'Acc: [ ${_f(ax, 6, 9)}, ${_f(ay, 6, 9)}, ${_f(az, 6, 9)} ]',
-      );
+      parts.add('Acc: [ ${_f(ax, 6, 9)}, ${_f(ay, 6, 9)}, ${_f(az, 6, 9)} ]');
+    }
+    if (hasMag) {
+      parts.add('Mag: [${_f(mx, 3, 9)}, ${_f(my, 3, 9)}, ${_f(mz, 3, 9)}] µT');
     }
     if (_hasAll([lat, lon, alt])) {
       parts.add(
@@ -220,7 +231,7 @@ class ImuDataParser {
         int offset = 5; // payload 开始相对于帧头的位置
         int endOffset = 5 + payloadLen; // payload 结束的位置
 
-        while (offset < endOffset) {
+        while (offset + 2 <= endOffset) {
           int id = bd.getUint8(offset);
           int len = bd.getUint8(offset + 1);
           offset += 2;
@@ -245,6 +256,22 @@ class ImuDataParser {
                 imuData.wx = bd.getInt32(offset, Endian.little) * 0.000001;
                 imuData.wy = bd.getInt32(offset + 4, Endian.little) * 0.000001;
                 imuData.wz = bd.getInt32(offset + 8, Endian.little) * 0.000001;
+              }
+              break;
+            case 0x30: // 磁场 µT
+              if (len == 12) {
+                imuData.mx = bd.getInt32(offset, Endian.little) * 0.001;
+                imuData.my = bd.getInt32(offset + 4, Endian.little) * 0.001;
+                imuData.mz = bd.getInt32(offset + 8, Endian.little) * 0.001;
+              }
+              break;
+            case 0x52: // GPS 时间扩展
+              if (len == 10) {
+                final tow = bd.getUint64(offset + 2, Endian.little);
+                if (tow < 604800000000000) {
+                  imuData.gpsWeek = bd.getUint16(offset, Endian.little);
+                  imuData.gpsTowNanos = tow;
+                }
               }
               break;
             case 0x40: // 欧拉角

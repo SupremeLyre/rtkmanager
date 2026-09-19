@@ -10,11 +10,22 @@ import 'package:file_picker/file_picker.dart';
 import 'serial_service.dart';
 import 'imu_data_parser.dart';
 import 'gga_sentence_extractor.dart';
+import 'gnss_ble_service.dart';
+import 'mobile_ui.dart';
 
 class MobilePositioningPage extends StatefulWidget {
-  final VoidCallback onOpenDrawer;
+  final VoidCallback? onOpenDrawer;
+  final bool ggaOnly;
+  final GnssBleService? bluetooth;
+  final ValueChanged<bool>? onImportingChanged;
 
-  const MobilePositioningPage({super.key, required this.onOpenDrawer});
+  const MobilePositioningPage({
+    super.key,
+    this.onOpenDrawer,
+    this.ggaOnly = false,
+    this.bluetooth,
+    this.onImportingChanged,
+  });
 
   @override
   State<MobilePositioningPage> createState() => _MobilePositioningPageState();
@@ -50,6 +61,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   StreamSubscription<String>? _subscription;
   StreamSubscription<Uint8List>? _ggaSubscription;
   StreamSubscription<ImuData>? _imuSubscription;
+  StreamSubscription<String>? _bluetoothSubscription;
+  GnssBleConnection _bluetoothConnection = GnssBleConnection.disconnected;
   bool _autoCenter = true;
   bool _showTimeline = true;
   bool _showPppsol = true;
@@ -64,11 +77,19 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
 
   // Gaode Map Tile URL (Standard/Vector implementation)
   final String _amapUrl =
-      'http://webrd{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}';
+      'https://webrd{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}';
 
   @override
   void initState() {
     super.initState();
+    final bluetooth = widget.bluetooth;
+    if (bluetooth != null) {
+      _bluetoothSubscription = bluetooth.ggaStream.listen(_handleLine);
+      bluetooth.addListener(_handleBluetoothConnection);
+    }
+    // 安卓实时数据由蓝牙提供，不启动桌面串口的数据订阅。
+    if (widget.ggaOnly || Platform.isAndroid) return;
+
     final serialService = SerialService();
     _subscription = serialService.lineStream.listen((line) {
       // GGA is extracted from raw bytes below so clean text lines are not
@@ -90,8 +111,26 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     _subscription?.cancel();
     _ggaSubscription?.cancel();
     _imuSubscription?.cancel();
+    _bluetoothSubscription?.cancel();
+    widget.bluetooth?.removeListener(_handleBluetoothConnection);
     _mapController.dispose();
     super.dispose();
+  }
+
+  void _handleBluetoothConnection() {
+    final connection = widget.bluetooth!.connection;
+    if (!mounted || connection == _bluetoothConnection) return;
+    setState(() {
+      _bluetoothConnection = connection;
+      if (connection == GnssBleConnection.connected) {
+        _points.clear();
+        _currentInfo = null;
+        _currentImuInfo = null;
+        _selectedIndex = null;
+        _isImportMode = false;
+        _autoCenter = true;
+      }
+    });
   }
 
   int _getEffectiveImuStatus(ImuData data) {
@@ -229,7 +268,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
       }
     }
 
-    if (!line.startsWith('\$PPPSOL')) return null;
+    if (widget.ggaOnly || !line.startsWith('\$PPPSOL')) return null;
 
     try {
       final parts = line.split(',');
@@ -321,6 +360,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           return Colors.green.shade800; // RTK FIX
         case 5:
           return Colors.deepOrange.shade700; // RTK FLOAT
+        case 6:
+          return Colors.blue.shade700; // DR
         default:
           return Colors.grey.shade600;
       }
@@ -364,6 +405,19 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         : 2;
     if (nextLevel == _trajectoryDetailLevel) return;
     setState(() => _trajectoryDetailLevel = nextLevel);
+  }
+
+  void _toggleGgaAutoFollow() {
+    setState(() {
+      _autoCenter = !_autoCenter;
+      if (!_autoCenter) return;
+      _selectedIndex = null;
+      if (_points.isEmpty) return;
+      final latest = _points.last;
+      _currentInfo = latest.posInfo;
+      _currentImuInfo = null;
+      _mapController.move(latest.location, _mapController.camera.zoom);
+    });
   }
 
   Marker _buildTrajectoryMarker(PositionHistoryPoint point) {
@@ -421,6 +475,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           return "RTK FIX (4)";
         case 5:
           return "RTK FLOAT (5)";
+        case 6:
+          return "DR (6)";
         default:
           return "UNKNOWN ($status)";
       }
@@ -618,13 +674,18 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   }
 
   Future<void> _importFile() async {
+    if (widget.bluetooth?.isActive == true || _isImporting) return;
+    var importStarted = false;
     try {
       FilePickerResult? result = await FilePicker.platform.pickFiles();
 
       if (result != null && result.files.single.path != null) {
         File file = File(result.files.single.path!);
         final int totalBytes = await file.length();
+        if (!mounted || widget.bluetooth?.isActive == true) return;
         int processedBytes = 0;
+        importStarted = true;
+        widget.onImportingChanged?.call(true);
 
         setState(() {
           _points.clear();
@@ -636,7 +697,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           _importProgress = 0.0;
         });
 
-        final parser = ImuDataParser();
+        final parser = widget.ggaOnly ? null : ImuDataParser();
         final nmeaParser = NmeaParser();
         List<PositionHistoryPoint> newPoints = [];
         int? lastSec;
@@ -648,7 +709,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         // Parse chunk by chunk to avoid out of memory and UI freeze
         await for (final chunk in file.openRead()) {
           processedBytes += chunk.length;
-          parser.parseData(chunk, (data) {
+          parser?.parseData(chunk, (data) {
             if (data.utcYear != null &&
                 data.utcYear! > 2000 &&
                 data.utcSec != null &&
@@ -697,7 +758,6 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           nmeaParser.parseChunk(chunk, (line) {
             var point = _parseNmeaLine(line);
             if (point != null) {
-              newPoints.add(point);
               if (!firstPointFound) {
                 firstPointFound = true;
                 _points.add(point);
@@ -711,6 +771,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                     _currentInfo = point.posInfo;
                   });
                 }
+              } else {
+                newPoints.add(point);
               }
             }
           });
@@ -764,6 +826,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           _importProgress = 0.0;
         });
       }
+    } finally {
+      if (importStarted && mounted) widget.onImportingChanged?.call(false);
     }
   }
 
@@ -795,6 +859,238 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     });
   }
 
+  List<Widget> _mobileMapActions() => [
+    IconButton(
+      icon: const Icon(Icons.file_open),
+      tooltip: '导入 GGA 文件',
+      onPressed: _isImporting || widget.bluetooth?.isActive == true
+          ? null
+          : _importFile,
+    ),
+    IconButton(
+      icon: Icon(
+        _autoCenter ? Icons.center_focus_strong : Icons.center_focus_weak,
+      ),
+      isSelected: _autoCenter,
+      tooltip: '自动跟随',
+      onPressed: _isImporting ? null : _toggleGgaAutoFollow,
+    ),
+    IconButton(
+      icon: const Icon(Icons.explore_outlined),
+      tooltip: '恢复北向（上北下南）',
+      onPressed: () => _mapController.rotate(0),
+    ),
+    if (_isImportMode)
+      IconButton(
+        icon: Icon(_showTimeline ? Icons.timeline : Icons.linear_scale),
+        tooltip: _showTimeline ? '隐藏时间轴' : '显示时间轴',
+        onPressed: () => setState(() => _showTimeline = !_showTimeline),
+      ),
+    IconButton(
+      icon: const Icon(Icons.delete_outline),
+      tooltip: '清除轨迹',
+      onPressed: _isImporting ? null : _clearPoints,
+    ),
+  ];
+
+  Widget _mobilePositionSummary() {
+    final info = _currentInfo;
+    final colors = Theme.of(context).colorScheme;
+    final compact =
+        MediaQuery.sizeOf(context).height < 500 ||
+        MediaQuery.textScalerOf(context).scale(14) > 20;
+    return Align(
+      alignment: Alignment.topLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: MobilePanel(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  if (!compact) ...[
+                    MobileIconTile(
+                      info == null ? Icons.location_searching : Icons.gps_fixed,
+                    ),
+                    const SizedBox(width: 12),
+                  ],
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          info == null
+                              ? '等待定位数据'
+                              : _getStatusText(
+                                  info.status,
+                                  false,
+                                  pointType: PointType.gga,
+                                ),
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: colors.primary,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          info == null
+                              ? '连接设备或导入 GGA 文件'
+                              : 'GGA UTC: ${info.utcTime}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (info != null)
+                    IconButton(
+                      onPressed: _showPositionDetails,
+                      tooltip: '查看定位详情',
+                      icon: const Icon(Icons.expand_more),
+                    ),
+                ],
+              ),
+              if (info != null && !compact) ...[
+                const Divider(height: 24),
+                Wrap(
+                  spacing: 20,
+                  runSpacing: 8,
+                  children: [
+                    _mapReading(
+                      Icons.satellite_alt,
+                      '${info.satellites}',
+                      '卫星',
+                    ),
+                    _mapReading(
+                      Icons.track_changes,
+                      info.dop1.toStringAsFixed(2),
+                      'HDOP',
+                    ),
+                    _mapReading(
+                      Icons.height,
+                      '${info.altitude.toStringAsFixed(1)} m',
+                      '海拔',
+                    ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _mapReading(IconData icon, String value, String label) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      ExcludeSemantics(
+        child: Icon(
+          icon,
+          size: 18,
+          color: Theme.of(context).colorScheme.primary,
+        ),
+      ),
+      const SizedBox(width: 6),
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            value,
+            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+          ),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    ],
+  );
+
+  void _showPositionDetails() {
+    final info = _currentInfo;
+    if (info == null) return;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      '定位详情',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '关闭定位详情',
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+              Text('GGA UTC: ${info.utcTime}'),
+              const SizedBox(height: 16),
+              MobileStatusChip(
+                _getStatusText(info.status, false, pointType: PointType.gga),
+                icon: Icons.gps_fixed,
+                emphasized: true,
+              ),
+              const SizedBox(height: 16),
+              MobileMetrics(
+                children: [
+                  MobileMetric(
+                    label: '参与定位的卫星',
+                    value: '${info.satellites}',
+                    icon: Icons.satellite_alt,
+                  ),
+                  MobileMetric(
+                    label: '水平精度因子 HDOP',
+                    value: info.dop1.toStringAsFixed(2),
+                    icon: Icons.track_changes,
+                  ),
+                  MobileMetric(
+                    label: '海拔',
+                    value: '${info.altitude.toStringAsFixed(2)} m',
+                    icon: Icons.height,
+                  ),
+                  if ([2, 4, 5].contains(info.status))
+                    MobileMetric(
+                      label: '差分龄期',
+                      value:
+                          '${info.differentialAge?.toStringAsFixed(1) ?? '--'} s',
+                      icon: Icons.schedule,
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     List<int> visibleIndices = [];
@@ -819,129 +1115,184 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
 
     return Scaffold(
       appBar: AppBar(
-        toolbarHeight: 36,
-        leading: IconButton(
-          icon: const Icon(Icons.menu),
-          iconSize: 20,
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(),
-          onPressed: widget.onOpenDrawer,
-        ),
-        title: const Text(
-          '定位结果 (高德)',
-          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.file_open),
-            iconSize: 20,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-            tooltip: '从文件导入IMU定位数据',
-            onPressed: _importFile,
-          ),
-          IconButton(
-            icon: Icon(
-              _autoCenter ? Icons.center_focus_strong : Icons.center_focus_weak,
-            ),
-            iconSize: 20,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-            tooltip: '自动跟随',
-            onPressed: () {
-              setState(() {
-                _autoCenter = !_autoCenter;
-              });
-            },
-          ),
-          if (_isImportMode)
-            IconButton(
-              icon: Icon(_showTimeline ? Icons.timeline : Icons.linear_scale),
-              iconSize: 20,
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-              tooltip: _showTimeline ? '隐藏时间轴' : '显示时间轴',
-              onPressed: () {
-                setState(() {
-                  _showTimeline = !_showTimeline;
-                });
-              },
-            ),
-          IconButton(
-            icon: Icon(
-              Icons.gps_fixed,
-              color: _showPppsol ? null : Colors.grey,
-            ),
-            iconSize: 20,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-            tooltip: _showPppsol ? '隐藏PPPSOL' : '显示PPPSOL',
-            onPressed: () {
-              setState(() {
-                _showPppsol = !_showPppsol;
-                _selectedIndex =
-                    null; // Reset selection so we don't stick to hidden points
-                if (_points.isNotEmpty) {
-                  // Find the latest valid point
-                  final point = _points.lastWhere(
-                    (p) =>
-                        (p.type == PointType.pppsol && _showPppsol) ||
-                        (p.type == PointType.gga && _showGga) ||
-                        (p.type == PointType.imu),
-                    orElse: () => _points.last,
-                  );
-                  if (point.isImu) {
-                    _currentImuInfo = point.imuData;
-                    _currentInfo = null;
-                  } else {
-                    _currentInfo = point.posInfo;
-                    _currentImuInfo = null;
-                  }
-                }
-              });
-            },
-          ),
-          IconButton(
-            icon: Icon(Icons.location_on, color: _showGga ? null : Colors.grey),
-            iconSize: 20,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-            tooltip: _showGga ? '隐藏GGA' : '显示GGA',
-            onPressed: () {
-              setState(() {
-                _showGga = !_showGga;
-                _selectedIndex = null;
-                if (_points.isNotEmpty) {
-                  final point = _points.lastWhere(
-                    (p) =>
-                        (p.type == PointType.pppsol && _showPppsol) ||
-                        (p.type == PointType.gga && _showGga) ||
-                        (p.type == PointType.imu),
-                    orElse: () => _points.last,
-                  );
-                  if (point.isImu) {
-                    _currentImuInfo = point.imuData;
-                    _currentInfo = null;
-                  } else {
-                    _currentInfo = point.posInfo;
-                    _currentImuInfo = null;
-                  }
-                }
-              });
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.delete),
-            iconSize: 20,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-            tooltip: '清除轨迹',
-            onPressed: _clearPoints,
-          ),
-          const SizedBox(width: 4),
-        ],
+        toolbarHeight: widget.ggaOnly ? 56 : 36,
+        leadingWidth: widget.ggaOnly ? 56 : null,
+        titleSpacing: widget.ggaOnly ? 8 : null,
+        leading: widget.onOpenDrawer == null
+            ? null
+            : IconButton(
+                tooltip: '打开导航',
+                icon: const Icon(Icons.menu),
+                iconSize: 20,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                onPressed: widget.onOpenDrawer,
+              ),
+        title: widget.ggaOnly
+            ? const FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '定位结果',
+                  maxLines: 1,
+                  softWrap: false,
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+              )
+            : const Text(
+                '定位结果 (高德)',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+        bottom: widget.ggaOnly
+            ? PreferredSize(
+                preferredSize: const Size.fromHeight(52),
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: _mobileMapActions().skip(1).toList(),
+                  ),
+                ),
+              )
+            : null,
+        actions: widget.ggaOnly
+            ? [_mobileMapActions().first]
+            : [
+                IconButton(
+                  icon: const Icon(Icons.file_open),
+                  iconSize: 20,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 32,
+                    minHeight: 32,
+                  ),
+                  tooltip: '从文件导入IMU定位数据',
+                  onPressed: _importFile,
+                ),
+                IconButton(
+                  icon: Icon(
+                    _autoCenter
+                        ? Icons.center_focus_strong
+                        : Icons.center_focus_weak,
+                  ),
+                  iconSize: 20,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 32,
+                    minHeight: 32,
+                  ),
+                  tooltip: '自动跟随',
+                  onPressed: () {
+                    setState(() {
+                      _autoCenter = !_autoCenter;
+                    });
+                  },
+                ),
+                if (_isImportMode)
+                  IconButton(
+                    icon: Icon(
+                      _showTimeline ? Icons.timeline : Icons.linear_scale,
+                    ),
+                    iconSize: 20,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 32,
+                      minHeight: 32,
+                    ),
+                    tooltip: _showTimeline ? '隐藏时间轴' : '显示时间轴',
+                    onPressed: () {
+                      setState(() {
+                        _showTimeline = !_showTimeline;
+                      });
+                    },
+                  ),
+                IconButton(
+                  icon: Icon(
+                    Icons.gps_fixed,
+                    color: _showPppsol ? null : Colors.grey,
+                  ),
+                  iconSize: 20,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 32,
+                    minHeight: 32,
+                  ),
+                  tooltip: _showPppsol ? '隐藏PPPSOL' : '显示PPPSOL',
+                  onPressed: () {
+                    setState(() {
+                      _showPppsol = !_showPppsol;
+                      _selectedIndex =
+                          null; // Reset selection so we don't stick to hidden points
+                      if (_points.isNotEmpty) {
+                        // Find the latest valid point
+                        final point = _points.lastWhere(
+                          (p) =>
+                              (p.type == PointType.pppsol && _showPppsol) ||
+                              (p.type == PointType.gga && _showGga) ||
+                              (p.type == PointType.imu),
+                          orElse: () => _points.last,
+                        );
+                        if (point.isImu) {
+                          _currentImuInfo = point.imuData;
+                          _currentInfo = null;
+                        } else {
+                          _currentInfo = point.posInfo;
+                          _currentImuInfo = null;
+                        }
+                      }
+                    });
+                  },
+                ),
+                IconButton(
+                  icon: Icon(
+                    Icons.location_on,
+                    color: _showGga ? null : Colors.grey,
+                  ),
+                  iconSize: 20,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 32,
+                    minHeight: 32,
+                  ),
+                  tooltip: _showGga ? '隐藏GGA' : '显示GGA',
+                  onPressed: () {
+                    setState(() {
+                      _showGga = !_showGga;
+                      _selectedIndex = null;
+                      if (_points.isNotEmpty) {
+                        final point = _points.lastWhere(
+                          (p) =>
+                              (p.type == PointType.pppsol && _showPppsol) ||
+                              (p.type == PointType.gga && _showGga) ||
+                              (p.type == PointType.imu),
+                          orElse: () => _points.last,
+                        );
+                        if (point.isImu) {
+                          _currentImuInfo = point.imuData;
+                          _currentInfo = null;
+                        } else {
+                          _currentInfo = point.posInfo;
+                          _currentImuInfo = null;
+                        }
+                      }
+                    });
+                  },
+                ),
+                IconButton(
+                  icon: const Icon(Icons.delete),
+                  iconSize: 20,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 32,
+                    minHeight: 32,
+                  ),
+                  tooltip: '清除轨迹',
+                  onPressed: _clearPoints,
+                ),
+                const SizedBox(width: 4),
+              ],
       ),
-      bottomNavigationBar: _buildLegendBar(),
+      bottomNavigationBar: widget.ggaOnly ? null : _buildLegendBar(),
       body: Stack(
         children: [
           FlutterMap(
@@ -990,7 +1341,14 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                 ),
             ],
           ),
-          if (_currentInfo != null)
+          if (widget.ggaOnly)
+            Positioned(
+              top: 12,
+              left: 12,
+              right: 12,
+              child: _mobilePositionSummary(),
+            ),
+          if (!widget.ggaOnly && _currentInfo != null)
             Positioned(
               top: 10,
               left: 10,
@@ -1120,7 +1478,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                 ),
               ),
             ),
-          if (_currentImuInfo != null)
+          if (!widget.ggaOnly && _currentImuInfo != null)
             Positioned(
               top: 10,
               left: 10,
@@ -1184,9 +1542,9 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
             ),
           if (visibleIndices.isNotEmpty && _showTimeline && _isImportMode)
             Positioned(
-              bottom: 20,
-              left: 20,
-              right: 20,
+              bottom: widget.ggaOnly ? 12 : 20,
+              left: widget.ggaOnly ? 12 : 20,
+              right: widget.ggaOnly ? 12 : 20,
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
@@ -1229,9 +1587,9 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                         size: 20,
                       ),
                       padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(
-                        minWidth: 28,
-                        minHeight: 28,
+                      constraints: BoxConstraints(
+                        minWidth: widget.ggaOnly ? 48 : 28,
+                        minHeight: widget.ggaOnly ? 48 : 28,
                       ),
                       onPressed: () {
                         if (visibleIndices.isEmpty) return;
@@ -1254,9 +1612,9 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                         size: 20,
                       ),
                       padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(
-                        minWidth: 28,
-                        minHeight: 28,
+                      constraints: BoxConstraints(
+                        minWidth: widget.ggaOnly ? 48 : 28,
+                        minHeight: widget.ggaOnly ? 48 : 28,
                       ),
                       onPressed: () {
                         if (visibleIndices.isEmpty) return;
@@ -1323,9 +1681,9 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      '正在导入IMU数据...',
-                      style: TextStyle(
+                    Text(
+                      widget.ggaOnly ? '正在导入 GGA 数据...' : '正在导入IMU数据...',
+                      style: const TextStyle(
                         color: Colors.white,
                         fontSize: 13,
                         fontWeight: FontWeight.bold,

@@ -2,12 +2,15 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'imu_data_parser.dart';
+import 'phone_capture_service.dart';
+import 'mobile_ui.dart';
 
 class FileItem {
   final String path;
   String status;
   double progress;
   bool isSelected;
+  String? outputPath;
   FileItem({
     required this.path,
     this.status = '等待解码',
@@ -31,7 +34,7 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
   bool _isDecoding = false;
 
   // 设置项
-  bool _useTidCompensation = true;
+  bool _useTidCompensation = !Platform.isAndroid;
   bool _outputEuler = false;
   bool _outputQuat = false;
   bool _outputPos = false;
@@ -39,7 +42,69 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
   bool _outputStatus = false;
   bool _outputTemp = false;
   bool _outputTid = false;
-  bool _decodeOnlyNavigationFrames = true;
+  bool _decodeOnlyNavigationFrames = !Platform.isAndroid;
+  bool _outputMag = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (Platform.isAndroid) {
+      // A failed initialization is reported when decoding is requested.
+      _prepareOutputDirectory().catchError((Object _) {});
+    }
+  }
+
+  Future<void> _prepareOutputDirectory() async {
+    final path = await PhoneCaptureService.channel.invokeMethod<String>(
+      'decodeDirectory',
+    );
+    if (mounted) setState(() => _outputDir = path);
+  }
+
+  Future<void> _pickCapture() async {
+    try {
+      final sessions = await PhoneCaptureService.sessions();
+      if (!mounted) return;
+      final paths = await showDialog<List<String>>(
+        context: context,
+        builder: (context) => SimpleDialog(
+          title: const Text('选择手机采集'),
+          children: [
+            if (sessions.isEmpty)
+              const Padding(padding: EdgeInsets.all(16), child: Text('尚无采集文件')),
+            for (final session in sessions)
+              SimpleDialogOption(
+                onPressed: () => Navigator.pop(
+                  context,
+                  (session['files'] as List)
+                      .cast<String>()
+                      .where((p) => p.endsWith('.bin'))
+                      .toList(),
+                ),
+                child: Text(session['name'] as String),
+              ),
+          ],
+        ),
+      );
+      if (!mounted || paths == null) return;
+      setState(() {
+        _decodeOnlyNavigationFrames = false;
+        _useTidCompensation = false;
+        for (final path in paths) {
+          if (!_files.any((f) => f.path == path)) {
+            _files.add(FileItem(path: path));
+          }
+          if (path.endsWith('mag.bin')) _outputMag = true;
+        }
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('读取采集文件失败：$e')));
+      }
+    }
+  }
 
   bool _hasNavigationPayload(ImuData data) {
     return data.lat != null ||
@@ -63,7 +128,7 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       allowMultiple: true,
     );
-    if (result != null) {
+    if (result != null && mounted) {
       setState(() {
         for (var file in result.paths) {
           if (file != null) {
@@ -79,7 +144,7 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
 
   Future<void> _pickOutputDir() async {
     String? selectedDirectory = await FilePicker.platform.getDirectoryPath();
-    if (selectedDirectory != null) {
+    if (selectedDirectory != null && mounted) {
       setState(() {
         _outputDir = selectedDirectory;
       });
@@ -88,6 +153,19 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
 
   Future<void> _startDecode() async {
     if (_isDecoding || _files.isEmpty) return;
+    if (Platform.isAndroid && _outputDir == null) {
+      try {
+        await _prepareOutputDirectory();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('输出目录不可用：$e')));
+        }
+        return;
+      }
+    }
+    if (!mounted) return;
     setState(() {
       _isDecoding = true;
     });
@@ -100,6 +178,7 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
         item.progress = 0.0;
       });
 
+      IOSink? openedSink;
       try {
         final parser = ImuDataParser();
         final file = File(item.path);
@@ -113,10 +192,15 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
             : item.path;
 
         final outDir = _outputDir ?? file.parent.path;
-        final outPath = '$outDir${Platform.pathSeparator}$fileName.csv';
+        final outputName =
+            Platform.isAndroid && file.parent.path.contains('Capture_')
+            ? '${file.parent.path.split(Platform.pathSeparator).last}_$fileName.csv'
+            : '$fileName.csv';
+        final outPath = '$outDir${Platform.pathSeparator}$outputName';
         final outFile = File(outPath);
 
         final sink = outFile.openWrite();
+        openedSink = sink;
         final outputBuffer = StringBuffer();
 
         String header = _decodeOnlyNavigationFrames
@@ -129,13 +213,13 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
         if (_outputVel) header += ",ve,vn,vu";
         if (_outputStatus) header += ",fusionState,gnssState";
         if (_outputTemp) header += ",tempImu";
+        if (_outputMag) header += ",mx_uT,my_uT,mz_uT";
         outputBuffer.writeln(header);
 
         String f(double? val) {
-          return (val ?? 0.0).toStringAsFixed(6).padLeft(10);
+          return val?.toStringAsFixed(6).padLeft(10) ?? '';
         }
 
-        bool hasValidTime = false;
         bool isCompensating = false;
         int recoveryFrames = 0;
         int lastTid = -1;
@@ -147,10 +231,10 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
             final bool hasRawImuFrame = imuData.hasRawImu;
             final bool hasNavPayload = _hasNavigationPayload(imuData);
             if (_decodeOnlyNavigationFrames) {
-              if (!hasNavPayload) return;
+              if (!hasNavPayload && !(_outputMag && imuData.hasMag)) return;
             } else {
               // 导航结果可能延迟独立到达，不能将缺失的六轴数据补零输出。
-              if (!hasRawImuFrame) return;
+              if (!hasRawImuFrame && !(_outputMag && imuData.hasMag)) return;
             }
 
             final ImuData outputData = imuData;
@@ -164,11 +248,15 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
             int msec = outputData.utcDateTimeMsec;
             int usec = outputData.utcDateTimeUsec;
 
-            if (year < 2026 || month == 0 || day == 0) return;
-
-            if (!hasValidTime) {
-              if (hour == 0 && min == 0) return;
-              hasValidTime = true;
+            final hasGpsTime =
+                outputData.gpsWeek != null && outputData.gpsTowNanos != null;
+            if (!hasGpsTime &&
+                (year < 1980 ||
+                    month < 1 ||
+                    month > 12 ||
+                    day < 1 ||
+                    day > 31)) {
+              return;
             }
 
             DateTime origDt = DateTime.utc(
@@ -184,6 +272,7 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
             DateTime compDt = origDt;
 
             if (hasRawImuFrame &&
+                !hasGpsTime &&
                 _useTidCompensation &&
                 lastTid != -1 &&
                 lastOrigDt != null &&
@@ -248,7 +337,9 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
                 (diff.inMicroseconds - gpsWeek * 7 * 24 * 3600 * 1000000) /
                 1000000.0;
 
-            String timeStr = '$gpsWeek,${gpsSow.toStringAsFixed(6)}';
+            String timeStr = hasGpsTime
+                ? '${outputData.gpsWeek},${outputData.gpsTowNanos! ~/ 1000000000}.${(outputData.gpsTowNanos! % 1000000000).toString().padLeft(9, '0')}'
+                : '$gpsWeek,${gpsSow.toStringAsFixed(6)}';
 
             String row = _decodeOnlyNavigationFrames
                 ? timeStr
@@ -293,6 +384,10 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
                   (v ?? 0.0).toStringAsFixed(2).padLeft(7);
               row += ',${tempF(outputData.tempImu)}';
             }
+            if (_outputMag) {
+              row +=
+                  ',${f(outputData.mx)},${f(outputData.my)},${f(outputData.mz)}';
+            }
             outputBuffer.writeln(row);
           }, broadcast: false);
 
@@ -306,6 +401,7 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
             }
             await sink.flush();
             lastFlushBytes = processedBytes;
+            if (!mounted) return;
             setState(() {
               final progress = totalBytes > 0
                   ? processedBytes / totalBytes
@@ -322,18 +418,28 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
         }
         await sink.flush();
         await sink.close();
+        openedSink = null;
 
+        if (!mounted) return;
         setState(() {
           item.status = '完成';
           item.progress = 1.0;
+          item.outputPath = outPath;
         });
       } catch (e) {
+        if (!mounted) return;
         setState(() {
           item.status = '错误';
         });
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('解码失败：$e')));
+      } finally {
+        await openedSink?.close();
       }
     }
 
+    if (!mounted) return;
     setState(() {
       _isDecoding = false;
     });
@@ -352,274 +458,536 @@ class _ImuBatchDecodePageState extends State<ImuBatchDecodePage> {
     });
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Column(
+  Widget _option(
+    String text,
+    bool value,
+    ValueChanged<bool> change,
+    double width,
+  ) => SizedBox(
+    width: width,
+    child: Row(
       children: [
-        Container(
-          height: 50,
-          color: Colors.blue,
-          child: Row(
-            children: [
-              IconButton(
-                icon: const Icon(Icons.menu, color: Colors.white),
-                onPressed: widget.onOpenDrawer,
+        Checkbox(
+          value: value,
+          onChanged: _isDecoding
+              ? null
+              : (v) => setState(() => change(v ?? false)),
+        ),
+        Flexible(child: Text(text)),
+      ],
+    ),
+  );
+
+  Widget _mobileContent() => Padding(
+    padding: const EdgeInsets.all(16),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        MobileHero(
+          title: '让原始数据清晰可读',
+          description: '导入二进制文件，选择需要的字段，批量转换为 CSV。',
+          icon: Icons.transform,
+          status: MobileStatusChip(
+            _isDecoding ? '正在解码' : 'BIN → CSV',
+            icon: _isDecoding ? Icons.hourglass_top : Icons.swap_horiz,
+            emphasized: _isDecoding,
+          ),
+        ),
+        const MobileSectionTitle('01  导入数据', icon: Icons.file_upload_outlined),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            OutlinedButton.icon(
+              onPressed: _isDecoding ? null : _pickFiles,
+              icon: const Icon(Icons.file_upload_outlined),
+              label: const Text('导入文件'),
+            ),
+            if (Platform.isAndroid)
+              OutlinedButton.icon(
+                onPressed: _isDecoding ? null : _pickCapture,
+                icon: const Icon(Icons.phone_android_outlined),
+                label: const Text('导入手机采集'),
               ),
-              const Text(
-                'IMU 批量解码',
-                style: TextStyle(color: Colors.white, fontSize: 18),
+          ],
+        ),
+        const MobileSectionTitle('02  解码设置', icon: Icons.tune),
+        MobilePanel(
+          padding: EdgeInsets.zero,
+          child: Column(
+            children: [
+              SwitchListTile(
+                title: const Text('只解码组合导航结果', style: TextStyle(fontSize: 14)),
+                subtitle: const Text(
+                  '关闭后导出原始 IMU 数据',
+                  style: TextStyle(fontSize: 12),
+                ),
+                value: _decodeOnlyNavigationFrames,
+                onChanged: _isDecoding
+                    ? null
+                    : (v) => setState(() => _decodeOnlyNavigationFrames = v),
+              ),
+              const Divider(height: 1, indent: 16, endIndent: 16),
+              SwitchListTile(
+                title: const Text('使用TID补偿时间戳', style: TextStyle(fontSize: 14)),
+                subtitle: const Text(
+                  '手机采集使用 GPS 时间，无需补偿',
+                  style: TextStyle(fontSize: 12),
+                ),
+                value: _useTidCompensation,
+                onChanged: _isDecoding
+                    ? null
+                    : (v) => setState(() => _useTidCompensation = v),
               ),
             ],
           ),
         ),
-        // 解码设置区域
-        Card(
-          margin: const EdgeInsets.all(8.0),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 16.0,
-              vertical: 8.0,
+        const SizedBox(height: 16),
+        const Text('附加输出字段', style: TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 4,
+          children: [
+            _fieldChip(
+              '输出磁场 (µT)',
+              Icons.explore_outlined,
+              _outputMag,
+              (v) => _outputMag = v,
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  '解码设置',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 16,
-                  runSpacing: 0,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Checkbox(
-                          value: _decodeOnlyNavigationFrames,
-                          onChanged: _isDecoding
-                              ? null
-                              : (v) => setState(
-                                  () => _decodeOnlyNavigationFrames = v ?? true,
-                                ),
-                        ),
-                        const Text('只解码组合导航结果'),
-                      ],
-                    ),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Checkbox(
-                          value: _useTidCompensation,
-                          onChanged: _isDecoding
-                              ? null
-                              : (v) => setState(
-                                  () => _useTidCompensation = v ?? false,
-                                ),
-                        ),
-                        const Text('使用TID补偿时间戳'),
-                      ],
-                    ),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Checkbox(
-                          value: _outputEuler,
-                          onChanged: _isDecoding
-                              ? null
-                              : (v) =>
-                                    setState(() => _outputEuler = v ?? false),
-                        ),
-                        const Text('输出欧拉角'),
-                      ],
-                    ),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Checkbox(
-                          value: _outputQuat,
-                          onChanged: _isDecoding
-                              ? null
-                              : (v) => setState(() => _outputQuat = v ?? false),
-                        ),
-                        const Text('输出四元数'),
-                      ],
-                    ),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Checkbox(
-                          value: _outputPos,
-                          onChanged: _isDecoding
-                              ? null
-                              : (v) => setState(() => _outputPos = v ?? false),
-                        ),
-                        const Text('输出位置(经纬高)'),
-                      ],
-                    ),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Checkbox(
-                          value: _outputVel,
-                          onChanged: _isDecoding
-                              ? null
-                              : (v) => setState(() => _outputVel = v ?? false),
-                        ),
-                        const Text('输出速度(东/北/天)'),
-                      ],
-                    ),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Checkbox(
-                          value: _outputStatus,
-                          onChanged: _isDecoding
-                              ? null
-                              : (v) =>
-                                    setState(() => _outputStatus = v ?? false),
-                        ),
-                        const Text('输出状态'),
-                      ],
-                    ),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Checkbox(
-                          value: _outputTemp,
-                          onChanged: _isDecoding
-                              ? null
-                              : (v) => setState(() => _outputTemp = v ?? false),
-                        ),
-                        const Text('输出温度'),
-                      ],
-                    ),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Checkbox(
-                          value: _outputTid,
-                          onChanged: _isDecoding
-                              ? null
-                              : (v) => setState(() => _outputTid = v ?? false),
-                        ),
-                        const Text('输出TID'),
-                      ],
-                    ),
-                  ],
-                ),
-              ],
+            _fieldChip(
+              '输出欧拉角',
+              Icons.screen_rotation_outlined,
+              _outputEuler,
+              (v) => _outputEuler = v,
             ),
+            _fieldChip(
+              '输出四元数',
+              Icons.view_in_ar_outlined,
+              _outputQuat,
+              (v) => _outputQuat = v,
+            ),
+            _fieldChip(
+              '输出位置(经纬高)',
+              Icons.place_outlined,
+              _outputPos,
+              (v) => _outputPos = v,
+            ),
+            _fieldChip(
+              '输出速度(东/北/天)',
+              Icons.speed_outlined,
+              _outputVel,
+              (v) => _outputVel = v,
+            ),
+            _fieldChip(
+              '输出状态',
+              Icons.verified_outlined,
+              _outputStatus,
+              (v) => _outputStatus = v,
+            ),
+            _fieldChip(
+              '输出温度',
+              Icons.thermostat_outlined,
+              _outputTemp,
+              (v) => _outputTemp = v,
+            ),
+            _fieldChip('输出TID', Icons.tag, _outputTid, (v) => _outputTid = v),
+          ],
+        ),
+        const SizedBox(height: 12),
+        const MobileNotice('加速度单位 g，角速度 °/s；缺失的轴留空，磁场选项会保留独立磁场帧。'),
+        const MobileSectionTitle(
+          '03  导出 CSV',
+          icon: Icons.table_chart_outlined,
+        ),
+        MobilePanel(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('输出目录', style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 8),
+              SelectableText(
+                _outputDir ??
+                    (Platform.isAndroid ? '解码时自动准备本地目录' : '默认(同源文件目录)'),
+                style: const TextStyle(fontSize: 12, height: 1.6),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: _isDecoding || _files.isEmpty
+                      ? null
+                      : _startDecode,
+                  icon: Icon(
+                    _isDecoding ? Icons.hourglass_top : Icons.play_arrow,
+                  ),
+                  label: Text(_isDecoding ? '正在解码…' : '开始解码'),
+                ),
+              ),
+            ],
           ),
         ),
-        // Toolbar
-        Padding(
-          padding: const EdgeInsets.all(8.0),
-          child: Row(
+        MobileSectionTitle(
+          '文件队列 · ${_files.length}',
+          icon: Icons.playlist_add_check,
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              ElevatedButton.icon(
-                onPressed: _isDecoding ? null : _pickFiles,
-                icon: const Icon(Icons.file_upload),
-                label: const Text('导入文件'),
-              ),
-              const SizedBox(width: 8),
-              ElevatedButton.icon(
-                onPressed: _isDecoding ? null : _pickOutputDir,
-                icon: const Icon(Icons.folder),
-                label: const Text('选择输出目录'),
-              ),
-              const SizedBox(width: 8),
-              ElevatedButton.icon(
-                onPressed: _isDecoding || _files.isEmpty ? null : _startDecode,
-                icon: const Icon(Icons.play_arrow),
-                label: const Text('开始解码'),
-              ),
-              const SizedBox(width: 8),
               IconButton(
-                icon: const Icon(Icons.clear_all),
                 tooltip: '清空列表',
                 onPressed: _isDecoding ? null : _clearList,
+                icon: const Icon(Icons.clear_all),
               ),
-              const SizedBox(width: 8),
               IconButton(
-                icon: const Icon(Icons.delete),
                 tooltip: '删除选中',
                 onPressed: _isDecoding || !_files.any((f) => f.isSelected)
                     ? null
                     : _deleteSelected,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  '输出目录: ${_outputDir ?? "默认(同源文件目录)"}',
-                  overflow: TextOverflow.ellipsis,
-                ),
+                icon: const Icon(Icons.delete_outline),
               ),
             ],
           ),
         ),
-        Expanded(
-          child: ListView.builder(
-            itemCount: _files.length,
-            itemBuilder: (context, index) {
-              final item = _files[index];
-              return ListTile(
-                leading: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Checkbox(
-                      value: item.isSelected,
-                      onChanged: _isDecoding
-                          ? null
-                          : (val) {
-                              setState(() {
-                                item.isSelected = val ?? false;
-                              });
-                            },
-                    ),
-                    const Icon(Icons.insert_drive_file),
-                  ],
-                ),
-                title: Text(item.path),
-                trailing: SizedBox(
-                  width: 120,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      if (item.status == '解码中...')
-                        Padding(
-                          padding: const EdgeInsets.only(right: 8.0),
-                          child: SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                              value: item.progress,
-                              strokeWidth: 2,
+        if (_files.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: MobileStatusChip(
+              '${_files.where((f) => f.status == '完成').length} / ${_files.length} 已完成',
+              icon: Icons.task_alt,
+            ),
+          ),
+        if (_files.isEmpty)
+          const MobileEmptyState(
+            icon: Icons.upload_file_outlined,
+            title: '等待导入文件',
+            message: '导入 BIN 文件后开始解码，也可以选择手机已保存的采集记录。',
+          ),
+      ],
+    ),
+  );
+
+  Widget _fieldChip(
+    String label,
+    IconData icon,
+    bool selected,
+    ValueChanged<bool> change,
+  ) => FilterChip(
+    avatar: ExcludeSemantics(child: Icon(icon, size: 18)),
+    label: Text(label),
+    selected: selected,
+    materialTapTargetSize: MaterialTapTargetSize.padded,
+    onSelected: _isDecoding ? null : (v) => setState(() => change(v)),
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final mobile = Theme.of(context).platform == TargetPlatform.android;
+    return Scaffold(
+      appBar: AppBar(
+        toolbarHeight: mobile ? null : 36,
+        title: mobile
+            ? const FittedBox(child: Text('IMU 批量解码'))
+            : const Text(
+                'IMU 批量解码',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+        leading: IconButton(
+          tooltip: '打开导航',
+          icon: const Icon(Icons.menu),
+          iconSize: mobile ? 24 : 20,
+          padding: mobile ? const EdgeInsets.all(8) : EdgeInsets.zero,
+          constraints: mobile ? null : const BoxConstraints(),
+          onPressed: widget.onOpenDrawer,
+        ),
+      ),
+      body: CustomScrollView(
+        slivers: [
+          SliverToBoxAdapter(
+            child: mobile
+                ? _mobileContent()
+                : Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Card(
+                          margin: EdgeInsets.zero,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 8,
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  '解码设置',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                LayoutBuilder(
+                                  builder: (context, constraints) {
+                                    final width = constraints.maxWidth < 560
+                                        ? constraints.maxWidth
+                                        : constraints.maxWidth / 2;
+                                    return Wrap(
+                                      children: [
+                                        _option(
+                                          '只解码组合导航结果',
+                                          _decodeOnlyNavigationFrames,
+                                          (v) =>
+                                              _decodeOnlyNavigationFrames = v,
+                                          width,
+                                        ),
+                                        _option(
+                                          '使用TID补偿时间戳',
+                                          _useTidCompensation,
+                                          (v) => _useTidCompensation = v,
+                                          width,
+                                        ),
+                                        _option(
+                                          '输出磁场 (µT)',
+                                          _outputMag,
+                                          (v) => _outputMag = v,
+                                          width,
+                                        ),
+                                        _option(
+                                          '输出欧拉角',
+                                          _outputEuler,
+                                          (v) => _outputEuler = v,
+                                          width,
+                                        ),
+                                        _option(
+                                          '输出四元数',
+                                          _outputQuat,
+                                          (v) => _outputQuat = v,
+                                          width,
+                                        ),
+                                        _option(
+                                          '输出位置(经纬高)',
+                                          _outputPos,
+                                          (v) => _outputPos = v,
+                                          width,
+                                        ),
+                                        _option(
+                                          '输出速度(东/北/天)',
+                                          _outputVel,
+                                          (v) => _outputVel = v,
+                                          width,
+                                        ),
+                                        _option(
+                                          '输出状态',
+                                          _outputStatus,
+                                          (v) => _outputStatus = v,
+                                          width,
+                                        ),
+                                        _option(
+                                          '输出温度',
+                                          _outputTemp,
+                                          (v) => _outputTemp = v,
+                                          width,
+                                        ),
+                                        _option(
+                                          '输出TID',
+                                          _outputTid,
+                                          (v) => _outputTid = v,
+                                          width,
+                                        ),
+                                      ],
+                                    );
+                                  },
+                                ),
+                                const Text(
+                                  '手机采集使用 GPS 时间，无需 TID 补偿。加速度单位 g，角速度 °/s；缺失的轴留空，磁场选项会保留独立磁场帧。',
+                                ),
+                              ],
                             ),
                           ),
                         ),
-                      Text(
-                        item.status == '解码中...'
-                            ? '${(item.progress * 100).toStringAsFixed(1)}%'
-                            : item.status,
-                        style: TextStyle(
-                          color: item.status == '完成'
-                              ? Colors.green
-                              : (item.status == '错误'
-                                    ? Colors.red
-                                    : Colors.grey),
-                          fontWeight: FontWeight.bold,
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            ElevatedButton.icon(
+                              onPressed: _isDecoding ? null : _pickFiles,
+                              icon: const Icon(Icons.file_upload),
+                              label: const Text('导入文件'),
+                            ),
+                            if (Platform.isAndroid)
+                              ElevatedButton.icon(
+                                onPressed: _isDecoding ? null : _pickCapture,
+                                icon: const Icon(Icons.phone_android),
+                                label: const Text('导入手机采集'),
+                              ),
+                            if (!Platform.isAndroid)
+                              ElevatedButton.icon(
+                                onPressed: _isDecoding ? null : _pickOutputDir,
+                                icon: const Icon(Icons.folder),
+                                label: const Text('选择输出目录'),
+                              ),
+                            ElevatedButton.icon(
+                              onPressed: _isDecoding || _files.isEmpty
+                                  ? null
+                                  : _startDecode,
+                              icon: const Icon(Icons.play_arrow),
+                              label: const Text('开始解码'),
+                            ),
+                            IconButton(
+                              tooltip: '清空列表',
+                              onPressed: _isDecoding ? null : _clearList,
+                              icon: const Icon(Icons.clear_all),
+                            ),
+                            IconButton(
+                              tooltip: '删除选中',
+                              onPressed:
+                                  _isDecoding ||
+                                      !_files.any((f) => f.isSelected)
+                                  ? null
+                                  : _deleteSelected,
+                              icon: const Icon(Icons.delete),
+                            ),
+                          ],
                         ),
+                        const SizedBox(height: 8),
+                        SelectableText('输出目录: ${_outputDir ?? "默认(同源文件目录)"}'),
+                        if (_files.isEmpty)
+                          const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 24),
+                            child: Text('导入 BIN 文件后开始解码'),
+                          ),
+                      ],
+                    ),
+                  ),
+          ),
+          SliverList.builder(
+            itemCount: _files.length,
+            itemBuilder: (context, index) {
+              final item = _files[index];
+              final mobile =
+                  Theme.of(context).platform == TargetPlatform.android;
+              return Card(
+                margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                child: Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Checkbox(
+                            value: item.isSelected,
+                            onChanged: _isDecoding
+                                ? null
+                                : (v) => setState(
+                                    () => item.isSelected = v ?? false,
+                                  ),
+                          ),
+                          Expanded(
+                            child: mobile
+                                ? Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          const ExcludeSemantics(
+                                            child: Icon(
+                                              Icons.description_outlined,
+                                              size: 20,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: Text(
+                                              item.path
+                                                  .split(RegExp(r'[/\\]'))
+                                                  .last,
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 8),
+                                      SelectableText(
+                                        item.path,
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          height: 1.6,
+                                        ),
+                                      ),
+                                    ],
+                                  )
+                                : SelectableText(item.path),
+                          ),
+                        ],
                       ),
+                      if (item.status == '解码中...')
+                        LinearProgressIndicator(value: item.progress),
+                      if (mobile)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          child: MobileStatusChip(
+                            item.status == '解码中...'
+                                ? '解码中 · ${(item.progress * 100).toStringAsFixed(1)}%'
+                                : item.status,
+                            icon: item.status == '完成'
+                                ? Icons.check_circle_outline
+                                : item.status == '错误'
+                                ? Icons.error_outline
+                                : Icons.hourglass_top,
+                            emphasized: item.status == '完成',
+                          ),
+                        )
+                      else
+                        Text(
+                          item.status == '解码中...'
+                              ? '${(item.progress * 100).toStringAsFixed(1)}%'
+                              : item.status,
+                          style: TextStyle(
+                            color: item.status == '完成'
+                                ? Colors.green
+                                : item.status == '错误'
+                                ? Colors.red
+                                : null,
+                          ),
+                        ),
+                      if (item.outputPath != null)
+                        SelectableText(item.outputPath!),
+                      if (Platform.isAndroid && item.outputPath != null)
+                        TextButton.icon(
+                          onPressed: () async {
+                            try {
+                              await PhoneCaptureService.channel
+                                  .invokeMethod<void>('share', {
+                                    'paths': [item.outputPath],
+                                  });
+                            } catch (e) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('分享失败：$e')),
+                                );
+                              }
+                            }
+                          },
+                          icon: const Icon(Icons.share),
+                          label: const Text('分享 CSV'),
+                        ),
                     ],
                   ),
                 ),
               );
             },
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }

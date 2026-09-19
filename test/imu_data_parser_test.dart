@@ -1,7 +1,71 @@
+import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rtkmanager/imu_data_parser.dart';
 
 void main() {
+  test('parses actual native sensor frames with GPST and independent axes', () {
+    final fixture = File('test/fixtures/phone_sensors.bin').readAsBytesSync();
+    final result = <ImuData>[];
+    final parser = ImuDataParser();
+    for (var i = 0; i < fixture.length; i += 7) {
+      parser.parseData(
+        fixture.sublist(i, (i + 7).clamp(0, fixture.length)),
+        result.add,
+        broadcast: false,
+      );
+    }
+    expect(result.length, 3);
+    expect(result.first.ax, 1);
+    expect(result.first.az, -1);
+    expect(result.first.wx, isNull);
+    expect(result[1].wx, closeTo(180, .00001));
+    expect(result[1].ax, isNull);
+    expect(result.last.hasMag, isTrue);
+    expect(result.last.mx, 10.25);
+    expect(result.last.my, -20.5);
+    expect(result.last.mz, 0);
+    for (final sample in result) {
+      expect(sample.gpsWeek, 2400);
+      expect(sample.gpsTowNanos, 123456123456789);
+      expect(sample.utcUsec, 123456);
+    }
+  });
+
+  test('firmware debug TLVs do not become magnetic samples', () {
+    final values = <ImuData>[];
+    ImuDataParser().parseData(
+      _frame(4, [
+        0x81,
+        4,
+        1,
+        2,
+        3,
+        4,
+        0x82,
+        4,
+        5,
+        6,
+        7,
+        8,
+        0x83,
+        4,
+        9,
+        0,
+        0,
+        0,
+      ]),
+      values.add,
+      broadcast: false,
+    );
+    expect(values.single.hasMag, isFalse);
+    expect(values.single.gpsWeek, isNull);
+  });
+
+  test('trailing incomplete TLV does not crash the parser', () {
+    final values = <ImuData>[];
+    ImuDataParser().parseData(_frame(4, [0x30]), values.add, broadcast: false);
+    expect(values.single.hasMag, isFalse);
+  });
   test('parses UTC microsecond extension', () {
     final frame = _frame(7, [
       0x50,

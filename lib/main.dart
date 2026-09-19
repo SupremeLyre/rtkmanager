@@ -4,9 +4,15 @@ import 'dart:io';
 import 'package:screen_retriever/screen_retriever.dart';
 import 'package:window_manager/window_manager.dart';
 import 'home_page.dart';
+import 'android_home_page.dart';
+import 'android_app_frame.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  if (Platform.isAndroid) {
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  }
 
   // 在支持的桌面平台上初始化窗口管理器
   if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
@@ -63,7 +69,9 @@ class MyApp extends StatelessWidget {
         useMaterial3: true,
         fontFamily: 'SourceHanSansHWSC',
       ),
-      home: const CustomWindowFrame(child: HomePage()),
+      home: CustomWindowFrame(
+        child: Platform.isAndroid ? const AndroidHomePage() : const HomePage(),
+      ),
     );
   }
 }
@@ -75,6 +83,13 @@ class CustomWindowFrame extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (Platform.isAndroid) {
+      return AndroidAppFrame(child: child);
+    }
+    if (Platform.isIOS) {
+      return SafeArea(child: child);
+    }
+
     return Scaffold(
       body: Column(
         children: [

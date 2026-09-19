@@ -1,105 +1,226 @@
 # RTK Manager
 
-RTK Manager 是一个基于 Flutter 开发的跨平台应用程序，主要用于 RTK (Real-Time Kinematic) 配置管理和串口调试。
+RTK Manager 是一个基于 Flutter 的 GNSS / RTK 工具，提供串口调试、NTRIP 差分转发、定位轨迹展示、卫星信息监测和 IMU 批量解码。安卓端提供独立的蓝牙设备连接、GGA 日志管理及手机原始传感器数据采集流程。
 
-## 功能特性
+## 平台与页面
 
-### 1. 串口调试助手
-*   **多标签页支持**：支持同时打开多个串口进行调试，主串口常驻，可动态添加/关闭新的串口标签页。
-*   **全局保存**：一键开启或停止所有连接串口的数据保存到本地文件中。
-*   **串口配置**：支持常见的波特率设置 (9600 - 921600)，自适应流控。
-*   **数据收发与解析**：
-    *   实时显示串口接收数据（支持 ASCII 原生显示与 HEX 显示模式）。
-    *   支持自定义指令发送。
-    *   **内置 IMU 数据解析**：支持特定二进制协议下的 IMU/GNSS 数据解析（温度、加速度、角速度、欧拉角、四元数等），并进行实时自适应换行的高效显示。
-    *   底层性能优化：动态合并高频串口数据并由独立解析器处理，配合原生 Flutter Widget，降低高频 UI 刷新造成的卡顿。
+| 页面 / 功能 | 桌面端（Windows / Linux / macOS） | 安卓端 |
+| --- | --- | --- |
+| 设备接入 | 多标签串口调试，支持 ASCII / HEX 收发 | BLE 扫描、连接与 GNSS 协议校验 |
+| RTK 配置 | NTRIP 连接、挂载点获取、RTCM 转发与保存 | — |
+| 定位结果 | 串口及文件中的 GGA、PPPSOL、IMU 导航结果 | 蓝牙 GGA 实时轨迹及 GGA 文件回放 |
+| 卫星信息 | 可见卫星统计、信噪比图、天空图 | — |
+| 日志存储 | 串口原始数据及 RTCM 文件保存 | GGA 按 UTC 日期自动归档、打开、分享与删除 |
+| 手机数据采集 | — | GNSS 原始观测、加速度、角速度及磁场 |
+| IMU 批量解码 | 文件导入、自选输出目录、CSV 导出 | 文件或手机采集导入、CSV 导出与分享 |
 
-### 2. RTK 配置 (NTRIP Client)
-*   **NTRIP 客户端**：内置标准 NTRIP 协议支持，可连接千寻、六分等 CORS 账号获取差分数据。
-*   **智能配置**：
-    *   支持配置 NTRIP Caster 的 IP、端口、用户名和密码。
-    *   **一键获取挂载点**：自动拉取源节点列表并支持下拉选择。
-*   **断点续传**：支持断线、弱网环境下的自动重连机制。
-*   **数据路由**：
-    *   **多路分发**：支持将接收到的 RTCM 差分数据同时转发到多个串口。
-    *   **数据记录**：支持将原始 RTCM 数据流实时保存到本地文件，便于后续回放分析。
-*   **状态监控**：实时日志记录连接状态、鉴权结果及数据吞吐。
+## 桌面端功能
 
-### 3. 定位结果可视化
-*   **地图集成**：集成 **高德地图** 瓦片，支持缩放、平移操作。
-*   **实时轨迹**：
-    *   解析主串口 `$PPPSOL` 格式的高精度定位结果。
-    *   **坐标转换**：内置 WGS84 到 GCJ-02 (国测局坐标) 转换算法，解决地图偏移问题。
-    *   **状态着色**：根据定位状态绘制不同颜色的轨迹点（<font color="pink">粉色 SPP</font> / <font color="blue">蓝色 PPP</font> / <font color="red">红色 预测</font>）。
-*   **悬浮仪表盘**：
-    *   实时显示 UTC 时间、定位状态。
-    *   显示 3D 速度、3D 定位精度、3D 速度精度。
-    *   实时监视 DOP 值 (DOP1/DOP2/DOP3)。
-*   **跟随模式**：支持自动锁定最新定位点，确保视角始终跟随移动目标。
+### 串口调试助手
 
-## UI / 交互
-*   **自定义窗口**：采用轻量化、现代化的自定义窗口标题栏（BitsDojo Window），带有逼真的 macOS 风格红黄绿操作按钮。
-*   **响应式布局**：侧边栏抽屉式导航，适配低分辨率屏幕（支持 800x480 及 400x300 小屏模式）。
+- 主串口常驻，支持添加和关闭多个串口标签页。
+- 支持 9600～921600 范围内的常用波特率、ASCII / HEX 显示及自定义指令发送。
+- 可独立保存串口数据，也可一键开启或停止所有已连接串口的数据保存。
+- 内置 IMU / GNSS 二进制协议解析，显示加速度、角速度、姿态、四元数、温度和导航状态等数据。
+- 高频接收数据合并刷新，解析结果随窗口宽度自动换行。
+
+### RTK 配置（NTRIP Client）
+
+- 配置 Caster 地址、端口、用户名、密码及挂载点，支持获取挂载点列表。
+- 接收 RTCM 差分数据，可同时转发至多个串口，并保存原始 RTCM 文件。
+- 支持断线自动重连，运行日志展示连接、鉴权及数据接收状态。
+
+### 定位结果与卫星信息
+
+- 使用高德地图瓦片，支持缩放、平移、旋转和自动跟随最新定位点。
+- 展示 GGA、`$PPPSOL` 及 IMU 导航轨迹，通过颜色与标记形状区分数据类型和定位状态。
+- 内置 WGS84 → GCJ-02 转换；按数据类型显示 UTC、定位状态、卫星数、海拔、DOP、速度及精度等信息。
+- 支持文件导入和时间轴逐历元查看。
+- 解析 GSV 卫星信息，展示 GPS、GLONASS、Galileo、BeiDou、QZSS、NavIC 的可见卫星统计、信噪比及天空分布。
+
+## 安卓端功能
+
+安卓端通过侧边抽屉切换五个页面：**设备连接、定位结果、日志存储、手机数据采集、IMU 批量解码**。
+
+### 设备连接与定位
+
+1. 在“设备连接”点击“扫描设备”，按系统提示授予蓝牙相关权限。
+2. 选择附近的 BLE 设备。扫描列表不按名称或广播 UUID 过滤，连接时校验 GNSS 服务、特征及通知能力。
+3. 连接成功后查看 GGA 接收计数和最近一条消息，点击“查看定位结果”进入地图。
+4. 在地图中使用自动跟随、恢复北向、清除轨迹及定位详情；断开连接后可导入 GGA 文件进行回放。
+
+切换页面会保留已建立的蓝牙连接并继续接收数据。实时连接期间不可导入历史文件；文件导入期间不可建立新连接。新连接成功时清空旧轨迹并恢复跟随。
+
+蓝牙接入使用项目约定的 GNSS GATT 协议，协议 UUID、MTU、通知格式及权限说明见 [Android 蓝牙定位](docs/android-bluetooth.md)。
+
+### GGA 日志存储
+
+- 通过校验的蓝牙 GGA 自动保存为 `GGAyyyyMMdd.txt`，日期取手机接收时刻的 **UTC 日期**。
+- 同一天持续追加，跨 UTC 零点切换文件；重启或重新连接不会覆盖已有日志。
+- “日志存储”显示文件修改时间（UTC），支持打开、分享和删除。
+- 导入地图的历史文件不会重复写入日志；删除当天日志后，新消息会重新生成当天文件。
+
+### 手机原始数据采集
+
+1. 开启系统定位，建议在室外点击“检测传感器”，授予精确位置权限。
+2. 勾选已检测到且有有效数据的 GNSS、加速度计、陀螺仪或磁传感器。
+3. 等待 **GNSS 时间同步**，选择 IMU / 磁场请求采样率：25、50、100 或 200 Hz，然后开始采集。实际采样率由硬件决定。
+4. 采集通过安卓前台服务运行，可在页面或通知中停止；停止后分享采集文件。
+5. 在“IMU 批量解码”选择“导入手机采集”，将 BIN 转换为 CSV。
+
+手机采集要求 Android 10 及以上，并且硬件能够提供 GNSS 与传感器时间的对应关系。未检测到有效数据的传感器不可勾选；仅采集 IMU / 磁场也需要 GNSS 授时，完成时间同步后才能开始采集。
+
+每次采集建立独立会话目录，根据所选内容生成文件：
+
+| 文件 | 内容 |
+| --- | --- |
+| `observations.rtcm3` | 手机 GNSS 的 RTCM3 MSM7 观测量 |
+| `gnss_raw.csv` | GNSS 原始测量、状态及推导观测量 |
+| `imu.bin` | 加速度和角速度各自的原始采样帧 |
+| `mag.bin` | 三轴磁场采样帧 |
+| `sensors_raw.csv` | 原始传感器数值、时间戳、精度状态及硬件偏置 |
+| `clock.csv` | GNSS 时间与传感器时钟的映射及不确定度 |
+| `session.json` | 手机、传感器、单位、采样配置、计数及结束原因 |
+
+RTCM3 文件只包含观测量，不包含广播星历；后处理定位需要另行准备匹配的星历。文件格式、时间基准、坐标轴及硬件限制见 [手机原始数据采集](docs/phone-capture.md)。
+
+## IMU 批量解码
+
+- 支持导入多个二进制文件，逐文件展示解码进度和完成状态。
+- 可选择只解码组合导航结果，或导出原始 IMU 数据；可附加磁场、欧拉角、四元数、位置、速度、状态、温度和 TID 字段。
+- CSV 使用 `GPSWeek`、`GPSSow` 表示时间；手机采集数据优先使用 GPST 扩展字段，无需 TID 时间补偿。
+- 加速度单位为 **g**，角速度为 **°/s**，磁场为 **µT**。未采集的字段留空，实测零值正常保留。
+- 桌面端可选择输出目录，默认与源文件同目录；安卓端输出至手机采集目录下的 `Decoded`，可直接分享 CSV。
+
+## 界面与交互
+
+- **统一风格**：蓝色主色、浅色背景，使用思源等宽中文字体及 Source Code Pro。
+- **桌面端**：通过 `window_manager` 管理自定义窗口及红黄绿窗口按钮；IMU 解码设置使用卡片布局，页标题与串口调试、RTK 配置保持一致。
+- **安卓端**：使用状态卡片、蓝牙示意图、传感器图标、数据摘要和文件卡片组织信息；解码页按导入、设置、导出三个步骤排列。
+- **地图信息**：安卓地图采用分层工具栏、定位摘要和详情弹层，小屏或大字体下收起次要指标。
+- **屏幕适配**：支持小窗口、手机横屏和系统大字体；安卓通过安全区处理避开状态栏、刘海与底部导航区域。
 
 ## 开发环境
 
-*   **Flutter SDK**: ^3.8.1
-*   **Dart SDK**: >=3.3.0 <4.0.0
+| 项目 | 配置 |
+| --- | --- |
+| Flutter | 本次验证使用 3.41.6 |
+| Dart | `pubspec.yaml` 要求 `^3.8.1`，即 `>=3.8.1 <4.0.0`；本次验证使用 3.11.4 |
+| Android 构建 | Gradle 8.12、Android Gradle Plugin 8.7.3、Kotlin 2.1.0；已使用 JDK 21 构建验证 |
+| Windows 构建 | Visual Studio 及“使用 C++ 的桌面开发”工作负载 |
+| Linux 串口运行 | `libserialport0` 及串口设备访问权限 |
 
-## 依赖库
+Android 的 SDK / NDK 版本配置见 [android/app/build.gradle.kts](android/app/build.gradle.kts)，Flutter 依赖与版本约束见 [pubspec.yaml](pubspec.yaml)。
 
-本项目使用了以下主要开源库：
+## 获取与运行
 
-*   `flutter_libserialport`: 跨平台串口通信
-*   `flutter_map` & `latlong2`: 地图渲染与地理计算
-*   `window_manager`: 桌面端窗口环境适配与定制（全面兼容 Linux 等）
-*   `file_picker`: 系统文件交互
-*   `path_provider`: 本地路径管理
+### 获取代码与依赖
 
-## 安装与运行
+```bash
+git clone https://github.com/SupremeLyre/rtkmanager.git
+cd rtkmanager
+flutter pub get
+flutter doctor -v
+```
 
-1.  **环境准备**：确保本地已安装 Flutter 开发环境及 C++ 编译工具链（Windows 下需安装 Visual Studio）。
-2.  **获取代码**：
-    ```bash
-    git clone https://github.com/YourRepo/rtkmanager.git
-    ```
-3.  **安装依赖**：
-    ```bash
-    flutter pub get
-    ```
-4.  **运行项目（桌面端）**：
-    ```bash
-    flutter run -d windows  # 或 linux / macos
-    ```
-5.  **编译与部署（树莓派 flutter-pi 环境）**：
-    确保已全局激活 `flutterpi_tool`：
-    ```bash
-    flutter pub global activate flutterpi_tool
-    ```
-    在项目根目录进行编译（以 64 位 Raspberry Pi 3B+ 为例）：
-    ```bash
-    flutterpi_tool build --arch=arm64 --cpu=pi3 --release
-    ```
-    编译完成后，将生成的 `build/flutter-pi/pi3-64` 文件夹复制到树莓派中，在树莓派终端使用以下命令运行：
-    ```bash
-    flutter-pi /home/pi/rtkmanager_app/flutter-pi/pi3-64
-    ```
+### 桌面端
 
-## 注意事项
+在相应操作系统上运行：
 
-*   **Flutter 版本兼容性**：截至 2026/4/13，`flutterpi_tool` 目前仅支持 Flutter 3.38 版本，尚未支持 3.41 版本，开发或编译时请注意使用兼容的 SDK 版本。
-*   **Linux 环境依赖**：在 Linux（包含树莓派 `flutter-pi`）环境下运行前，**必须先安装系统底层的串口驱动库**，否则运行会崩溃或提示 `failed to load dynamic library libserialport.so`。请运行以下命令安装：
-    ```bash
-    sudo apt-get update
-    sudo apt-get install libserialport0 libserialport-dev
-    ```
-*   **串口权限**：在 Linux 下由于硬件权限限制，普通用户无法直接读取串口。请将当前用户加入 `dialout` 组以获取永久读写权限（执行 `sudo usermod -a -G dialout $USER` 然后**重启系统生效**）。
-*   **地图加载**：地图瓦片加载依赖网络连接，请确保设备已连接互联网。
+```bash
+flutter run -d windows
+# Linux：flutter run -d linux
+# macOS：flutter run -d macos
+```
 
-## 作者
+Windows 发布构建：
 
-*   **SupremeLyre**
+```bash
+flutter build windows --release
+```
 
-## 版本
+运行文件位于 `build/windows/x64/runner/Release/`，分发时保留该目录内的 DLL 和 `data` 等配套文件。
 
-*   1.0.0+1
+### 安卓端
+
+连接已开启 USB 调试的手机，使用 `flutter devices` 列出的设备 ID：
+
+```bash
+flutter devices
+flutter run -d <设备ID>
+flutter build apk --release
+```
+
+APK 输出位置为 `build/app/outputs/flutter-apk/app-release.apk`。调试包可使用 `flutter build apk --debug` 构建。
+
+若 Flutter 使用了与本项目 Gradle 不兼容的 Java 版本，可将 JDK 路径指定为本机安装的 JDK 21 后再构建：
+
+```bash
+flutter config --jdk-dir="<本机JDK21路径>"
+flutter doctor -v
+```
+
+该设置影响本机 Flutter 的后续构建。当前项目的 release 构建仍使用 debug 签名，正式发布前应在 `android/app/build.gradle.kts` 中配置自己的签名。
+
+### Linux 与树莓派
+
+Debian / Ubuntu / Raspberry Pi OS 可安装串口运行库，并将当前用户加入串口访问组：
+
+```bash
+sudo apt-get update
+sudo apt-get install libserialport0
+sudo usermod -a -G dialout "$USER"
+```
+
+组权限变更后重新登录或重启。缺少串口运行库时可能出现 `failed to load dynamic library libserialport.so`。
+
+树莓派可使用 `flutter-pi` 运行。构建前需匹配 `flutterpi_tool`、目标引擎和 Flutter SDK 版本；该流程应单独核对，不直接沿用上表的桌面 / 安卓验证版本。以 64 位 Raspberry Pi 3B+ 为例：
+
+```bash
+dart pub global activate flutterpi_tool
+flutterpi_tool build --arch=arm64 --cpu=pi3 --release
+```
+
+将生成的 `build/flutter-pi/pi3-64` 目录复制到树莓派后，在目标设备执行：
+
+```bash
+flutter-pi /home/pi/rtkmanager_app/flutter-pi/pi3-64
+```
+
+## 数据保存与使用说明
+
+- 地图瓦片需要网络连接。
+- 安卓蓝牙连接与手机传感器采集是独立功能；进入采集页不会自动启动传感器，需先点击“检测传感器”。
+- 安卓 GGA 日志通常位于应用的 `Documents/GGA`，手机采集位于 `Documents/PhoneCapture`；实际完整路径以页面显示为准。
+- 上述安卓目录属于应用数据，卸载或清除应用数据时会删除，需要保留的文件请先分享导出。
+- 不可用的传感器、缺失载波相位或中断的时钟同步会按实际状态处理，详细规则见手机采集文档。
+
+## 验证
+
+在项目根目录执行：
+
+```bash
+flutter analyze lib test
+flutter test
+```
+
+测试覆盖 GGA 解析与日志、蓝牙连接状态、IMU 解码与 CSV 输出、手机采集的传感器和授时条件，以及安全区、小屏、横屏、大字体和减少动画设置下的页面布局。
+
+原生采集格式校验及跨语言样本位于 `test/native/` 和 `test/fixtures/`，说明见 [手机原始数据采集](docs/phone-capture.md)。
+
+## 主要依赖
+
+| 依赖 | 用途 |
+| --- | --- |
+| `flutter_libserialport` | 桌面串口通信 |
+| `flutter_map` / `latlong2` | 地图渲染与地理坐标 |
+| `window_manager` / `screen_retriever` | 桌面窗口管理与屏幕工作区适配 |
+| `file_picker` / `path_provider` | 文件选择及本地路径 |
+| `intl` | 日期与时间格式化 |
+
+安卓 BLE、GNSS 原始观测及传感器采集通过 Kotlin 原生接口和 Flutter 平台通道实现。
+
+## 作者与版本
+
+- 作者：SupremeLyre
+- 当前版本：`1.0.0+1`（以 `pubspec.yaml` 为准）

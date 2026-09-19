@@ -10,8 +10,13 @@ import 'gga_sentence_extractor.dart';
 
 class RtkConfigPage extends StatefulWidget {
   final VoidCallback onOpenDrawer;
+  final List<String> Function()? listSerialPorts;
 
-  const RtkConfigPage({super.key, required this.onOpenDrawer});
+  const RtkConfigPage({
+    super.key,
+    required this.onOpenDrawer,
+    this.listSerialPorts,
+  });
 
   @override
   State<RtkConfigPage> createState() => _RtkConfigPageState();
@@ -111,8 +116,14 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
   }
 
   void _refreshPorts() {
+    List<String> ports = [];
+    try {
+      ports = widget.listSerialPorts?.call() ?? SerialPort.availablePorts;
+    } catch (e) {
+      _addLog("无法获取串口列表: $e");
+    }
     setState(() {
-      _availablePorts = SerialPort.availablePorts;
+      _availablePorts = ports;
     });
   }
 
@@ -624,6 +635,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
               children: [
                 Expanded(
                   child: DropdownButtonFormField<String>(
+                    isExpanded: true,
                     initialValue: _selectedMountPoint,
                     style: const TextStyle(fontSize: 14, color: Colors.black),
                     decoration: const InputDecoration(
@@ -667,6 +679,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                 Expanded(
                   flex: 2,
                   child: DropdownButtonFormField<String>(
+                    isExpanded: true,
                     initialValue:
                         [
                           '主串口',
@@ -713,6 +726,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                 Expanded(
                   flex: 1,
                   child: DropdownButtonFormField<int>(
+                    isExpanded: true,
                     initialValue: _ggaSourceBaudRate,
                     style: const TextStyle(fontSize: 14, color: Colors.black),
                     decoration: const InputDecoration(
@@ -765,6 +779,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                         Expanded(
                           flex: 2,
                           child: DropdownButtonFormField<String>(
+                            isExpanded: true,
                             initialValue: item.portName,
                             style: const TextStyle(
                               fontSize: 14,
@@ -802,6 +817,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
                         Expanded(
                           flex: 1,
                           child: DropdownButtonFormField<int>(
+                            isExpanded: true,
                             initialValue: item.baudRate,
                             style: const TextStyle(
                               fontSize: 14,

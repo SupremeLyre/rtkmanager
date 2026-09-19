@@ -79,6 +79,60 @@ void main() {
       '2435,475218.130000,4,5',
     ]);
   });
+
+  testWidgets(
+    'magnetic checkbox includes separate samples with GPST and blank missing axes',
+    (tester) async {
+      input.writeAsBytesSync(
+        File('test/fixtures/phone_sensors.bin').readAsBytesSync(),
+      );
+      final rows = await _decode(
+        tester,
+        input,
+        navigationOnly: false,
+        magnetic: true,
+      );
+      expect(rows.first, 'GPSWeek,GPSSow,gx,gy,gz,ax,ay,az,mx_uT,my_uT,mz_uT');
+      final data = rows
+          .skip(1)
+          .map((row) => row.split(',').map((s) => s.trim()).toList())
+          .toList();
+      expect(data.length, 3);
+      expect(data.map((row) => row[1]), everyElement('123456.123456789'));
+      expect(data.first.sublist(2, 5), ['', '', '']);
+      expect(data.last.sublist(2, 8), List.filled(6, ''));
+      expect(data.last.sublist(8).map(double.parse), [10.25, -20.5, 0]);
+    },
+  );
+
+  for (final size in [const Size(320, 640), const Size(640, 320)]) {
+    testWidgets('decode settings and actions scroll at $size with large text', (
+      tester,
+    ) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = size;
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+      await tester.pumpWidget(
+        MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(
+              context,
+            ).copyWith(textScaler: const TextScaler.linear(2)),
+            child: child!,
+          ),
+          home: ImuBatchDecodePage(onOpenDrawer: () {}),
+        ),
+      );
+      await tester.ensureVisible(find.text('输出磁场 (µT)'));
+      await tester.pumpAndSettle();
+      expect(find.text('输出磁场 (µT)').hitTestable(), findsOneWidget);
+      await tester.ensureVisible(find.text('导入文件'));
+      await tester.pumpAndSettle();
+      expect(find.text('导入文件').hitTestable(), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  }
 }
 
 Future<List<String>> _decode(
@@ -86,6 +140,7 @@ Future<List<String>> _decode(
   File input, {
   required bool navigationOnly,
   bool compensate = true,
+  bool magnetic = false,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -93,17 +148,33 @@ Future<List<String>> _decode(
     ),
   );
   Future<void> toggle(String label) async {
-    final row = find.ancestor(of: find.text(label), matching: find.byType(Row));
-    await tester.tap(find.descendant(of: row, matching: find.byType(Checkbox)));
+    final text = find.text(label);
+    await tester.ensureVisible(text);
+    await tester.pumpAndSettle();
+    final toggle = find.widgetWithText(SwitchListTile, label);
+    final chip = find.widgetWithText(FilterChip, label);
+    if (toggle.evaluate().isNotEmpty || chip.evaluate().isNotEmpty) {
+      await tester.tap(text);
+    } else {
+      final row = find.ancestor(of: text, matching: find.byType(Row));
+      await tester.tap(
+        find.descendant(of: row, matching: find.byType(Checkbox)),
+      );
+    }
     await tester.pump();
   }
 
   if (!navigationOnly) await toggle('只解码组合导航结果');
   if (!compensate) await toggle('使用TID补偿时间戳');
   if (navigationOnly) await toggle('输出状态');
+  if (magnetic) await toggle('输出磁场 (µT)');
+  await tester.ensureVisible(find.text('导入文件'));
+  await tester.pumpAndSettle();
   await tester.tap(find.text('导入文件'));
   await tester.pumpAndSettle();
   await tester.runAsync(() async {
+    await tester.ensureVisible(find.text('开始解码'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('开始解码'));
     final deadline = DateTime.now().add(const Duration(seconds: 10));
     while (find.text('完成').evaluate().isEmpty &&
