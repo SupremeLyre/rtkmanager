@@ -39,7 +39,8 @@ class PhoneCaptureBridge(private val activity: Activity, messenger: BinaryMessen
                 }
                 "start" -> engine.worker.post {
                     try {
-                        engine.start((call.argument<List<String>>("sensors") ?: emptyList()).toSet(), call.argument<Int>("hz") ?: 100)
+                        engine.start((call.argument<List<String>>("sensors") ?: emptyList()).toSet(),
+                            call.argument<Int>("imuHz") ?: 100, call.argument<Int>("magHz") ?: 50)
                         main.post { result.success(engine.snapshot) }
                     } catch (e: Exception) { main.post { result.error("capture", e.message, null) } }
                 }

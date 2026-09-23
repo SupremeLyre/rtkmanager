@@ -1,11 +1,17 @@
 import 'package:flutter/material.dart';
 import 'phone_capture_service.dart';
-import 'mobile_ui.dart';
+import 'app_ui.dart';
 
 class PhoneCapturePage extends StatefulWidget {
-  const PhoneCapturePage({super.key, required this.onOpenDrawer, this.service});
+  const PhoneCapturePage({
+    super.key,
+    required this.onOpenDrawer,
+    this.service,
+    this.onShowImu,
+  });
   final VoidCallback onOpenDrawer;
   final PhoneCaptureService? service;
+  final VoidCallback? onShowImu;
   @override
   State<PhoneCapturePage> createState() => _PhoneCapturePageState();
 }
@@ -13,7 +19,8 @@ class PhoneCapturePage extends StatefulWidget {
 class _PhoneCapturePageState extends State<PhoneCapturePage> {
   late final service = widget.service ?? PhoneCaptureService();
   final selected = <String>{};
-  int hz = 100;
+  int imuHz = 100;
+  int magHz = 50;
   List<Map<String, dynamic>> files = [];
   @override
   void initState() {
@@ -45,14 +52,7 @@ class _PhoneCapturePageState extends State<PhoneCapturePage> {
       final validSelection =
           selected.isNotEmpty && selected.every(service.available);
       return Scaffold(
-        appBar: AppBar(
-          title: const FittedBox(child: Text('手机数据采集')),
-          leading: IconButton(
-            tooltip: '打开导航',
-            icon: const Icon(Icons.menu),
-            onPressed: widget.onOpenDrawer,
-          ),
-        ),
+        appBar: AppPageBar(title: '手机数据采集', onOpenDrawer: widget.onOpenDrawer),
         body: ListView(
           padding: const EdgeInsets.all(16),
           children: [
@@ -85,11 +85,13 @@ class _PhoneCapturePageState extends State<PhoneCapturePage> {
               runSpacing: 8,
               children: [
                 OutlinedButton.icon(
+                  key: const ValueKey('capture-probe'),
                   onPressed: locked ? null : () => service.command('probe'),
                   icon: const Icon(Icons.sensors),
                   label: const Text('检测传感器'),
                 ),
                 FilledButton.icon(
+                  key: const ValueKey('capture-start'),
                   onPressed:
                       locked ||
                           !service.probing ||
@@ -98,12 +100,14 @@ class _PhoneCapturePageState extends State<PhoneCapturePage> {
                       ? null
                       : () => service.command('start', {
                           'sensors': selected.toList(),
-                          'hz': hz,
+                          'imuHz': imuHz,
+                          'magHz': magHz,
                         }),
                   icon: const Icon(Icons.fiber_manual_record),
                   label: const Text('开始采集'),
                 ),
                 OutlinedButton.icon(
+                  key: const ValueKey('capture-stop'),
                   onPressed:
                       service.busy || (!service.probing && !service.recording)
                       ? null
@@ -114,13 +118,19 @@ class _PhoneCapturePageState extends State<PhoneCapturePage> {
                   icon: const Icon(Icons.stop),
                   label: const Text('停止'),
                 ),
+                if (widget.onShowImu != null)
+                  OutlinedButton.icon(
+                    key: const ValueKey('capture-open-imu'),
+                    onPressed: widget.onShowImu,
+                    icon: const Icon(Icons.show_chart),
+                    label: const Text('IMU 实时曲线'),
+                  ),
               ],
             ),
             const MobileSectionTitle('采集内容', icon: Icons.tune),
             for (final (key, label, icon) in const [
               ('gnss', 'GNSS 原始观测', Icons.satellite_alt),
-              ('accel', '加速度计', Icons.speed_outlined),
-              ('gyro', '陀螺仪', Icons.screen_rotation_outlined),
+              ('imu', 'IMU（加速度计 + 陀螺仪）', Icons.sensors_outlined),
               ('mag', '磁传感器', Icons.explore_outlined),
             ])
               Padding(
@@ -128,6 +138,7 @@ class _PhoneCapturePageState extends State<PhoneCapturePage> {
                 child: MobilePanel(
                   padding: EdgeInsets.zero,
                   child: CheckboxListTile(
+                    key: ValueKey('capture-$key'),
                     contentPadding: const EdgeInsets.symmetric(
                       horizontal: 12,
                       vertical: 8,
@@ -164,10 +175,11 @@ class _PhoneCapturePageState extends State<PhoneCapturePage> {
               ),
             const SizedBox(height: 6),
             DropdownButtonFormField<int>(
-              initialValue: hz,
+              key: const ValueKey('imu-rate'),
+              initialValue: imuHz,
               isExpanded: true,
               decoration: const InputDecoration(
-                labelText: 'IMU / 磁场请求采样率',
+                labelText: 'IMU 请求采样率',
                 prefixIcon: Icon(Icons.multiline_chart),
               ),
               items: [25, 50, 100, 200]
@@ -175,7 +187,39 @@ class _PhoneCapturePageState extends State<PhoneCapturePage> {
                   .toList(),
               onChanged: locked
                   ? null
-                  : (value) => setState(() => hz = value ?? 100),
+                  : (value) => setState(() => imuHz = value ?? 100),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<int>(
+              key: const ValueKey('mag-rate'),
+              initialValue: magHz,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: '磁力计请求采样率',
+                prefixIcon: Icon(Icons.explore_outlined),
+              ),
+              items: [10, 25, 50, 100, 200]
+                  .map((v) => DropdownMenuItem(value: v, child: Text('$v Hz')))
+                  .toList(),
+              onChanged: locked
+                  ? null
+                  : (value) => setState(() => magHz = value ?? 50),
+            ),
+            const SizedBox(height: 12),
+            MobileNotice(
+              [
+                'IMU 与磁力计分别请求频率，以实测输出为准。',
+                for (final (key, name) in const [
+                  ('imu', 'IMU'),
+                  ('mag', '磁力计'),
+                ])
+                  if (service.maxHz(key) != null)
+                    '$name 硬件上限 ${service.maxHz(key)!.toStringAsFixed(0)} Hz',
+                if (service.maxHz('mag') != null &&
+                    magHz > service.maxHz('mag')!)
+                  '磁力计请求超过硬件上限，将按硬件上限采集。',
+              ].join('\n'),
+              icon: Icons.speed_outlined,
             ),
             const SizedBox(height: 12),
             MobileNotice(
@@ -192,8 +236,7 @@ class _PhoneCapturePageState extends State<PhoneCapturePage> {
                 children: [
                   for (final (key, label, icon) in const [
                     ('gnss', 'GNSS', Icons.satellite_alt),
-                    ('accel', '加速度', Icons.speed_outlined),
-                    ('gyro', '角速度', Icons.screen_rotation_outlined),
+                    ('imu', '六轴 IMU', Icons.sensors_outlined),
                     ('mag', '磁场', Icons.explore_outlined),
                   ])
                     MobileMetric(
@@ -202,6 +245,13 @@ class _PhoneCapturePageState extends State<PhoneCapturePage> {
                       icon: icon,
                     ),
                 ],
+              ),
+              const SizedBox(height: 12),
+              MobileNotice(
+                '实测输出：IMU ${service.rate('imu').toStringAsFixed(1)} Hz · 磁场 ${service.rate('mag').toStringAsFixed(1)} Hz\n'
+                '原始输入：加速度 ${service.rate('accel').toStringAsFixed(1)} Hz · 陀螺仪 ${service.rate('gyro').toStringAsFixed(1)} Hz\n'
+                '未配对样本 ${service.state['unpairedImuSamples'] ?? 0} 条',
+                icon: Icons.monitor_heart_outlined,
               ),
             ],
             const MobileSectionTitle('存储路径', icon: Icons.folder_open_outlined),
@@ -241,7 +291,7 @@ class _PhoneCapturePageState extends State<PhoneCapturePage> {
                       Padding(
                         padding: EdgeInsets.only(bottom: 12),
                         child: Text(
-                          '保持手机坐标轴原始方向，不插值、不补零。载波相位由手机提供，缺失时标记无效。实际采样率由硬件决定。',
+                          '加速度与角速度按时间一对一配成六轴 IMU，采用陀螺仪时间；原始时间及配对偏差保存在 CSV。保持手机坐标轴原始方向，不插值、不补零。实际采样率由硬件决定。',
                           style: TextStyle(fontSize: 13, height: 1.6),
                         ),
                       ),

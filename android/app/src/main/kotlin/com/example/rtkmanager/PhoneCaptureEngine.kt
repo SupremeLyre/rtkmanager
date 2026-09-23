@@ -50,7 +50,13 @@ class PhoneCaptureEngine private constructor(private val context: Context) : Sen
     private var session: File? = null
     private val outputs = mutableMapOf<String, BufferedOutputStream>()
     private var wake: PowerManager.WakeLock? = null
-    private var requestedHz = 100
+    private var imuHz = 100
+    private var magHz = 50
+    private var pairer = ImuSamplePairer(5000000L)
+    private val rates = mutableMapOf<String, SensorSampleRate>()
+    private val liveFrames = mutableListOf<ByteArray>()
+    private val liveFlush = Runnable { flushLive() }
+    private var liveScheduled = false
     private val fixListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {}
         override fun onProviderDisabled(provider: String) {
@@ -73,7 +79,7 @@ class PhoneCaptureEngine private constructor(private val context: Context) : Sen
                 val now = SystemClock.elapsedRealtimeNanos()
                 if (mode == "recording") {
                     if (sync.at(now) == null) { finish("GNSS 时钟超过 10 秒未更新，已停止并保存文件"); return@guarded }
-                    val stalled = selected.firstOrNull { key -> key != "gnss" && now - (seen[key] ?: 0) > 5000000000L }
+                    val stalled = sensorKeys(selected).firstOrNull { key -> now - (seen[key] ?: 0) > 5000000000L }
                     if (stalled != null) { finish("$stalled 数据流中断，已停止并保存文件"); return@guarded }
                     outputs.values.forEach { it.flush() }
                 } else if (mode == "probing" && now - probeStarted > 60000000000L) {
@@ -89,7 +95,9 @@ class PhoneCaptureEngine private constructor(private val context: Context) : Sen
     fun probe() = guarded {
         if (mode == "recording") return@guarded
         unregister()
-        sync.clear(); seen.clear(); gnssSeen = 0; counts.clear(); phaseCount = 0; observationCount = 0
+        sync.clear(); seen.clear(); rates.clear(); selected = emptySet()
+        pairer = ImuSamplePairer(5000000L)
+        gnssSeen = 0; counts.clear(); phaseCount = 0; observationCount = 0
         require(Build.VERSION.SDK_INT >= 29) { "精确同步需要 Android 10 及 GNSS elapsedRealtime 时间戳支持" }
         require(location.isProviderEnabled(LocationManager.GPS_PROVIDER)) { "请先开启手机系统定位" }
         devices.clear()
@@ -111,20 +119,27 @@ class PhoneCaptureEngine private constructor(private val context: Context) : Sen
         worker.removeCallbacks(heartbeat); worker.post(heartbeat)
     }
 
-    fun start(keys: Set<String>, hz: Int) {
+    private fun sensorKeys(keys: Set<String>): Set<String> = keys.flatMap {
+        when (it) { "imu" -> listOf("accel", "gyro"); "mag" -> listOf("mag"); else -> emptyList() }
+    }.toSet()
+
+    fun start(keys: Set<String>, requestedImuHz: Int, requestedMagHz: Int) {
         check(mode == "probing") { "请先重新检测传感器" }
-        require(keys.isNotEmpty() && keys.all { it in setOf("gnss", "accel", "gyro", "mag") }) { "请选择可用传感器" }
-        require(hz in listOf(25, 50, 100, 200))
+        require(keys.isNotEmpty() && keys.all { it in setOf("gnss", "imu", "mag") }) { "请选择可用传感器" }
+        require(requestedImuHz in listOf(25, 50, 100, 200) && requestedMagHz in listOf(10, 25, 50, 100, 200))
         val now = SystemClock.elapsedRealtimeNanos()
         check(sync.at(now) != null && now - sync.elapsedNs < 3000000000L) { "尚无新鲜的 GNSS 统一时间，请在室外重新检测" }
         keys.forEach { key -> check(available(key, now)) { "$key 尚无有效数据，不能开始采集" } }
-        selected = keys; requestedHz = hz
+        selected = keys; imuHz = requestedImuHz; magHz = requestedMagHz
         root.mkdirs()
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
             .format(Date())
         val dir = File(root, "Capture_$stamp")
         check(dir.mkdir()) { "无法创建采集目录" }
-        session = dir; counts.clear(); tid = 0; rtcm.reset(); started = now
+        session = dir; counts.clear(); rates.clear(); tid = 0; rtcm.reset(); started = now
+        val imuPeriodNs = max(1000000000L / imuHz,
+            max(devices["accel"]?.minDelay ?: 0, devices["gyro"]?.minDelay ?: 0) * 1000L)
+        pairer = ImuSamplePairer(imuPeriodNs / 2)
         startGps = sync.at(now)!!
         try {
             fun open(name: String) { outputs[name] = BufferedOutputStream(FileOutputStream(File(dir, name)), 65536) }
@@ -140,12 +155,18 @@ class PhoneCaptureEngine private constructor(private val context: Context) : Sen
                 open("sensors_raw.csv")
                 line("sensors_raw.csv", "sensor,gpsNanos,elapsedRealtimeNanos,accuracy,x,y,z,biasX,biasY,biasZ")
             }
-            if ("accel" in keys || "gyro" in keys) open("imu.bin")
+            if ("imu" in keys) {
+                open("imu.bin"); open("imu_pairs.csv")
+                line("imu_pairs.csv", "tid,gpsNanos,accelElapsedNanos,gyroElapsedNanos,accelMinusGyroNanos")
+            }
             if ("mag" in keys) open("mag.bin")
             metadata("recording")
             sensors.unregisterListener(this)
-            keys.filter { it != "gnss" }.forEach { key ->
-                check(sensors.registerListener(this, devices.getValue(key), 1000000 / hz, worker)) { "$key 无法启动" }
+            sensorKeys(keys).forEach { key ->
+                val sensor = devices.getValue(key)!!
+                val hz = if (key == "mag") magHz else imuHz
+                val periodUs = if (key == "mag") max(1000000 / hz, sensor.minDelay) else (imuPeriodNs / 1000).toInt()
+                check(sensors.registerListener(this, sensor, periodUs, 0, worker)) { "$key 无法启动" }
             }
             wake = (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "rtkmanager:rawCapture").apply { acquire() }
@@ -158,6 +179,8 @@ class PhoneCaptureEngine private constructor(private val context: Context) : Sen
         val wasRecording = mode == "recording" || outputs.isNotEmpty()
         mode = "idle"; message = reason
         unregister()
+        pairer.finish()
+        flushLive()
         var failure: String? = null
         outputs.values.forEach { try { it.close() } catch (e: Exception) { failure = e.message } }
         outputs.clear()
@@ -178,8 +201,23 @@ class PhoneCaptureEngine private constructor(private val context: Context) : Sen
     private fun guarded(block: () -> Unit) {
         try { block() } catch (e: Exception) { finish("采集异常：${e.message}") }
     }
-    private fun available(key: String, now: Long): Boolean = if (key == "gnss")
-        gnssSeen > 0 && now - gnssSeen < 3000000000L else devices[key] != null && now - (seen[key] ?: 0) < 2000000000L
+    private fun available(key: String, now: Long): Boolean = when (key) {
+        "gnss" -> gnssSeen > 0 && now - gnssSeen < 3000000000L
+        "imu" -> available("accel", now) && available("gyro", now)
+        else -> devices[key] != null && (seen[key] ?: 0) > 0 && now - seen.getValue(key) < 2000000000L
+    }
+
+    private fun maxHz(key: String): Double? = if (key == "imu") {
+        listOfNotNull(maxHz("accel"), maxHz("gyro")).takeIf { it.size == 2 }?.minOrNull()
+    } else devices[key]?.minDelay?.takeIf { it > 0 }?.let { 1e6 / it }
+
+    private fun sensorDetail(key: String): String = when (key) {
+        "gnss" -> "RTCM3 MSM7；有效观测 $observationCount，载波 $phaseCount，未编码 $unsupportedCount"
+        "imu" -> listOf("accel" to "加速度计", "gyro" to "陀螺仪").joinToString("\n") { (key, label) ->
+            "$label：${sensorDetail(key)} · ${if (mode != "idle" && available(key, SystemClock.elapsedRealtimeNanos())) "已收到数据" else "等待有效数据"}"
+        }
+        else -> devices[key]?.let { "${it.name} · ${if (it.type in listOf(35, 16, 14)) "未校准原始值" else "系统校准值"}" } ?: "未发现对应硬件"
+    }
 
     private fun publish() {
         val now = SystemClock.elapsedRealtimeNanos()
@@ -187,10 +225,11 @@ class PhoneCaptureEngine private constructor(private val context: Context) : Sen
         snapshot = mapOf("mode" to mode, "message" to message, "timeReady" to ready,
             "path" to (session?.path ?: root.path), "phaseCount" to phaseCount, "observationCount" to observationCount,
             "unsupportedCount" to unsupportedCount, "counts" to counts.toMap(), "selected" to selected.toList(),
-            "sensors" to (listOf("gnss") + devices.keys).associateWith { key -> mapOf(
+            "imuHz" to imuHz, "magHz" to magHz, "unpairedImuSamples" to pairer.dropped,
+            "rates" to rates.mapValues { (_, rate) -> if (mode == "idle") 0.0 else rate.hz(now) },
+            "sensors" to (listOf("gnss", "imu") + devices.keys).associateWith { key -> mapOf(
                 "available" to (mode != "idle" && available(key, now)),
-                "detail" to if (key == "gnss") "RTCM3 MSM7；有效观测 $observationCount，载波 $phaseCount，未编码 $unsupportedCount" else
-                    (devices[key]?.let { "${it.name} · ${if (it.type in listOf(35, 16, 14)) "未校准原始值" else "系统校准值"}" } ?: "未发现对应硬件")) })
+                "maxHz" to maxHz(key), "detail" to sensorDetail(key)) })
         val value = snapshot
         main.post { listener?.invoke(value) }
     }
@@ -201,15 +240,41 @@ class PhoneCaptureEngine private constructor(private val context: Context) : Sen
             val key = devices.entries.firstOrNull { it.value == event.sensor }?.key ?: return@guarded
             if (event.values.size < 3 || event.values.take(3).any { !it.isFinite() }) return@guarded
             seen[key] = event.timestamp
-            if (mode != "recording" || key !in selected || event.timestamp < started) return@guarded
+            rates.getOrPut(key) { SensorSampleRate() }.add(event.timestamp)
+            if (mode != "recording" || key !in sensorKeys(selected) || event.timestamp < started) return@guarded
             val gps = sync.at(event.timestamp) ?: return@guarded
-            val id = when (key) { "accel" -> 0x10; "gyro" -> 0x20; else -> 0x30 }
-            val file = if (key == "mag") "mag.bin" else "imu.bin"
-            outputs.getValue(file).write(CaptureFormats.sensorFrame(tid++ and 65535, gps, leap, id, event.values))
             val v = (0..5).joinToString(",") { if (it < event.values.size) event.values[it].toString() else "" }
             line("sensors_raw.csv", "$key,$gps,${event.timestamp},${event.accuracy},$v")
             counts[key] = (counts[key] ?: 0) + 1
+            if (key == "mag") {
+                writeFrame("mag.bin", CaptureFormats.sensorFrame(tid++ and 65535, gps, leap, 0x30, event.values))
+            } else {
+                for (pair in pairer.add(key, event.timestamp, event.values)) {
+                    val pairGps = sync.at(pair.gyro.timestamp) ?: continue
+                    val frameTid = tid++ and 65535
+                    writeFrame("imu.bin", CaptureFormats.imuFrame(frameTid, pairGps, leap, pair.accel.values, pair.gyro.values))
+                    line("imu_pairs.csv", "$frameTid,$pairGps,${pair.accel.timestamp},${pair.gyro.timestamp},${pair.accel.timestamp - pair.gyro.timestamp}")
+                    counts["imu"] = (counts["imu"] ?: 0) + 1
+                    rates.getOrPut("imu") { SensorSampleRate() }.add(pair.gyro.timestamp)
+                }
+            }
         }
+    }
+
+    private fun writeFrame(file: String, bytes: ByteArray) {
+        outputs.getValue(file).write(bytes)
+        if (listener == null) return
+        liveFrames.add(bytes)
+        if (liveFrames.size >= 128) flushLive()
+        else if (!liveScheduled) { liveScheduled = true; worker.postDelayed(liveFlush, 50) }
+    }
+
+    private fun flushLive() {
+        worker.removeCallbacks(liveFlush); liveScheduled = false
+        if (liveFrames.isEmpty()) return
+        val value = mapOf("type" to "samples", "session" to session?.name, "frames" to liveFrames.toList())
+        liveFrames.clear()
+        main.post { listener?.invoke(value) }
     }
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
@@ -277,13 +342,16 @@ class PhoneCaptureEngine private constructor(private val context: Context) : Sen
     }
     private fun line(file: String, value: String) { outputs.getValue(file).write((value + "\n").toByteArray(Charsets.UTF_8)) }
     private fun metadata(status: String) {
-        val json = JSONObject().put("formatVersion", 1).put("status", status)
+        val json = JSONObject().put("formatVersion", 2).put("status", status)
             .put("device", "${Build.MANUFACTURER} ${Build.MODEL}").put("androidSdk", Build.VERSION.SDK_INT)
-            .put("selected", selected.joinToString(",")).put("requestedSensorHz", requestedHz)
+            .put("selected", selected.joinToString(",")).put("requestedImuHz", imuHz).put("requestedMagHz", magHz)
+            .put("actualSensorHz", JSONObject(rates.mapValues { (_, rate) -> rate.averageHz() }))
+            .put("unpairedImuSamples", pairer.dropped)
             .put("timeSystem", "GPST; TLV 0x52=u16 week + u64 nanoseconds of week; little endian")
             .put("startGpsNanos", startGps).put("leapSeconds", leap).put("leapSource", leapSource)
             .put("axes", "Android device frame: x right, y top, z out of screen; no screen rotation")
-            .put("imuUnits", "0x10: g * 1e-6; 0x20: deg/s * 1e-6; independent timestamped samples")
+            .put("imuUnits", "0x10: g * 1e-6; 0x20: deg/s * 1e-6; both in one frame")
+            .put("imuPairing", "one-to-one chronological pairing; toleranceNs=${pairer.toleranceNs}; frame time=gyro; no interpolation/reuse; original timestamps in imu_pairs.csv and sensors_raw.csv")
             .put("magUnits", "0x30: microtesla * 1e-3; 0x81-0x83 reserved for firmware debug")
             .put("rawCsvUnits", "Android SI units: m/s^2, rad/s, microtesla; bias values preserved if reported")
             .put("rtcm", "MSM7 1077/1087/1097/1107/1117/1127/1137; station 0; observations only, no ephemerides")

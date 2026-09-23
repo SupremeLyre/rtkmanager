@@ -17,6 +17,7 @@ class FakeCapture extends PhoneCaptureService {
     required bool synced,
     bool available = true,
     bool recording = false,
+    bool gyro = false,
   }) {
     state = {
       'mode': recording ? 'recording' : 'probing',
@@ -24,7 +25,7 @@ class FakeCapture extends PhoneCaptureService {
       'sensors': {
         'gnss': {'available': available},
         'accel': {'available': available},
-        'gyro': {'available': false, 'detail': '未发现对应硬件'},
+        'gyro': {'available': gyro, 'detail': gyro ? '已收到数据' : '未发现对应硬件'},
         'mag': {'available': available},
       },
     };
@@ -90,9 +91,9 @@ void main() {
         );
         service.update(synced: false);
         await tester.pump();
-        await show(option('陀螺仪'), up: true);
+        await show(option('IMU（加速度计 + 陀螺仪）'), up: true);
         expect(
-          tester.widget<CheckboxListTile>(option('陀螺仪')).onChanged,
+          tester.widget<CheckboxListTile>(option('IMU（加速度计 + 陀螺仪）')).onChanged,
           isNull,
         );
         await show(option('磁传感器'));
@@ -107,7 +108,8 @@ void main() {
         await tester.pump();
         expect(service.commands.single.$1, 'start');
         expect(service.commands.single.$2?['sensors'], ['mag']);
-        expect(service.commands.single.$2?['hz'], 100);
+        expect(service.commands.single.$2?['imuHz'], 100);
+        expect(service.commands.single.$2?['magHz'], 50);
         service.update(synced: true, available: false);
         await tester.pump();
         expect(tester.widget<FilledButton>(start()).onPressed, isNull);
@@ -122,6 +124,52 @@ void main() {
       },
     );
   }
+
+  testWidgets(
+    'selects six-axis IMU as one item and requests independent rates',
+    (tester) async {
+      final service = FakeCapture()..update(synced: true, gyro: true);
+      addTearDown(service.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PhoneCapturePage(service: service, onOpenDrawer: () {}),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final imu = find.widgetWithText(CheckboxListTile, 'IMU（加速度计 + 陀螺仪）');
+      await tester.scrollUntilVisible(
+        imu,
+        250,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(imu);
+      await tester.pump();
+      final magRate = find.byKey(const ValueKey('mag-rate'));
+      await tester.scrollUntilVisible(
+        magRate,
+        250,
+        scrollable: find.byType(Scrollable).first,
+      );
+      tester.widget<DropdownButtonFormField<int>>(magRate).onChanged!(25);
+      final imuRate = find.byKey(const ValueKey('imu-rate'));
+      tester.widget<DropdownButtonFormField<int>>(imuRate).onChanged!(200);
+      await tester.pump();
+      final start = find.widgetWithText(FilledButton, '开始采集');
+      await tester.scrollUntilVisible(
+        start,
+        -250,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(start);
+      await tester.pump();
+      expect(service.commands.single.$2, {
+        'sensors': ['imu'],
+        'imuHz': 200,
+        'magHz': 25,
+      });
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   test('native permission error remains actionable', () async {
     final service = PhoneCaptureService();

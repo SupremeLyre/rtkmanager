@@ -10,6 +10,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rtkmanager/android_home_page.dart';
 import 'package:rtkmanager/android_app_frame.dart';
+import 'package:rtkmanager/app_ui.dart';
 import 'package:rtkmanager/gga_log_service.dart';
 import 'package:rtkmanager/gnss_ble_service.dart';
 import 'package:rtkmanager/positioning_page.dart';
@@ -62,6 +63,65 @@ void main() {
 
   tearDown(() {
     directory.deleteSync(recursive: true);
+  });
+
+  testWidgets('Desktop PPP keeps its readings in the shared position card', (
+    tester,
+  ) async {
+    input.writeAsStringSync(
+      '\$PPPSOL,20260918123456.00,4,18,114.35,0.01,30.52,0.01,35,0.01,0,3,0.03,4,0.04,0,0,0,0,0,1,2,3,0*00\r\n',
+    );
+    await HttpOverrides.runZoned(() async {
+      await tester.binding.setSurfaceSize(const Size(1000, 760));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: mobileTheme(ThemeData(fontFamily: 'SourceHanSansHWSC')),
+          home: MobilePositioningPage(onOpenDrawer: () {}),
+        ),
+      );
+      await tester.runAsync(() async {
+        await tester.tap(find.byTooltip('从文件导入IMU定位数据'));
+        final deadline = DateTime.now().add(const Duration(seconds: 10));
+        while (find.textContaining('文件解析完成').evaluate().isEmpty &&
+            DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+          await tester.pump();
+        }
+      });
+      expect(find.text('文件解析完成，共载入 1 个轨迹点'), findsOneWidget);
+      final context = tester.element(find.byType(MobilePositioningPage));
+      ScaffoldMessenger.of(context).removeCurrentSnackBar();
+      await tester.pumpAndSettle();
+
+      for (final size in [const Size(1000, 760), const Size(400, 720)]) {
+        await tester.binding.setSurfaceSize(size);
+        await tester.pumpAndSettle();
+        expect(find.text('PPP UTC: 12:34:56.00'), findsOneWidget);
+        expect(find.byType(MobilePanel), findsOneWidget);
+        expect(find.byTooltip('查看定位详情').hitTestable(), findsOneWidget);
+        await tester.tap(find.byTooltip('查看定位详情'));
+        await tester.pumpAndSettle();
+        for (final label in [
+          '参与定位的卫星',
+          '精度因子 DOP 1',
+          '35.00 m',
+          '5.000 m/s',
+          '0.017 m',
+          '0.050 m/s',
+          '2.00 / 3.00',
+        ]) {
+          expect(find.text(label), findsOneWidget);
+        }
+        expect(find.text('水平精度因子 HDOP'), findsNothing);
+        expect(find.text('差分龄期'), findsNothing);
+        expect(tester.takeException(), isNull);
+        await tester.tap(find.byTooltip('关闭定位详情'));
+        await tester.pumpAndSettle();
+      }
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    }, createHttpClient: (_) => _TileHttpClient());
   });
 
   for (final (size, scale) in [

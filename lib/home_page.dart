@@ -4,6 +4,8 @@ import 'rtk_config_page.dart';
 import 'positioning_page.dart';
 import 'satellite_page.dart';
 import 'imu_batch_decode_page.dart';
+import 'serial_imu_page.dart';
+import 'app_ui.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -20,7 +22,7 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _selectedIndex = index;
     });
-    Navigator.pop(context); // Close the drawer
+    _scaffoldKey.currentState?.closeDrawer();
   }
 
   void _openDrawer() {
@@ -31,55 +33,22 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       key: _scaffoldKey,
-      drawer: SizedBox(
-        width: 200,
-        child: Drawer(
-          child: ListView(
-            padding: EdgeInsets.zero,
-            children: [
-              Container(
-                height: 80,
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                decoration: const BoxDecoration(color: Colors.blue),
-                alignment: Alignment.bottomLeft,
-                child: const Text(
-                  'RTK Manager\r\nby SupremeLyre',
-                  style: TextStyle(color: Colors.white, fontSize: 18),
-                ),
-              ),
-              ListTile(
-                leading: const Icon(Icons.developer_board),
-                title: const Text('串口调试助手'),
-                selected: _selectedIndex == 0,
-                onTap: () => _onItemTapped(0),
-              ),
-              ListTile(
-                leading: const Icon(Icons.settings),
-                title: const Text('RTK 配置'),
-                selected: _selectedIndex == 1,
-                onTap: () => _onItemTapped(1),
-              ),
-              ListTile(
-                leading: const Icon(Icons.map),
-                title: const Text('定位结果'),
-                selected: _selectedIndex == 2,
-                onTap: () => _onItemTapped(2),
-              ),
-              ListTile(
-                leading: const Icon(Icons.satellite),
-                title: const Text('卫星信息'),
-                selected: _selectedIndex == 3,
-                onTap: () => _onItemTapped(3),
-              ),
-              ListTile(
-                leading: const Icon(Icons.data_object),
-                title: const Text('IMU 批量解码'),
-                selected: _selectedIndex == 4,
-                onTap: () => _onItemTapped(4),
-              ),
-            ],
+      drawer: AppNavigationDrawer(
+        selectedIndex: _selectedIndex,
+        onSelected: _onItemTapped,
+        keyPrefix: 'desktop-nav',
+        destinations: [
+          AppDestination(Icons.usb, '串口调试助手', '连接设备与收发数据'),
+          AppDestination(
+            Icons.settings_input_antenna,
+            'RTK 配置',
+            'NTRIP 差分与数据转发',
           ),
-        ),
+          AppDestination(Icons.map_outlined, '定位结果', '实时位置与轨迹回放'),
+          AppDestination(Icons.satellite_alt_outlined, '卫星信息', '信号强度与天空分布'),
+          AppDestination(Icons.transform, 'IMU 批量解码', '原始数据转 CSV'),
+          AppDestination(Icons.show_chart, 'IMU 数据可视化', '六轴 IMU · 磁场实时曲线'),
+        ],
       ),
       body: IndexedStack(
         index: _selectedIndex,
@@ -89,6 +58,11 @@ class _HomePageState extends State<HomePage> {
           MobilePositioningPage(onOpenDrawer: _openDrawer),
           SatellitePage(onOpenDrawer: _openDrawer),
           ImuBatchDecodePage(onOpenDrawer: _openDrawer),
+          SerialImuPage(
+            onOpenDrawer: _openDrawer,
+            active: _selectedIndex == 5,
+            onOpenSerial: () => setState(() => _selectedIndex = 0),
+          ),
         ],
       ),
     );

@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:flutter_libserialport/flutter_libserialport.dart';
+import 'package:flutter/foundation.dart';
+import 'imu_data_parser.dart';
 
 class SerialService {
   static final SerialService _instance = SerialService._internal();
   static final Map<String, SerialService> _activeServices = {};
+  static final connectedServices = ValueNotifier<List<SerialService>>([]);
 
   static SerialService? getActiveService(String portName) {
     return _activeServices[portName];
@@ -32,6 +34,9 @@ class SerialService {
   // Stream for received data (raw bytes)
   final _dataStreamController = StreamController<Uint8List>.broadcast();
   Stream<Uint8List> get dataStream => _dataStreamController.stream;
+  ImuDataParser _imuParser = ImuDataParser();
+  final _imuStreamController = StreamController<ImuData>.broadcast();
+  Stream<ImuData> get imuDataStream => _imuStreamController.stream;
 
   // Stream for received lines (decoded string)
   final _lineStreamController = StreamController<String>.broadcast();
@@ -96,6 +101,11 @@ class SerialService {
               _saveFilePath = null;
             }
             _dataStreamController.add(data);
+            _imuParser.parseData(
+              data,
+              _imuStreamController.add,
+              broadcast: false,
+            );
             _processLines(data);
             _textConversionSink?.add(data);
           },
@@ -116,6 +126,7 @@ class SerialService {
         );
 
         _isOpen = true;
+        connectedServices.value = _activeServices.values.toList();
       } else {
         throw SerialPort.lastError ?? Exception("Failed to open port");
       }
@@ -130,6 +141,7 @@ class SerialService {
     if (_currentPortName != null) {
       _activeServices.remove(_currentPortName);
       _currentPortName = null;
+      connectedServices.value = _activeServices.values.toList();
     }
     _readerSubscription?.cancel();
     if (_port != null && _port!.isOpen) {
@@ -143,6 +155,7 @@ class SerialService {
     _port = null;
     _reader = null;
     _buffer.clear();
+    _imuParser = ImuDataParser();
   }
 
   int write(Uint8List data) {
@@ -232,6 +245,7 @@ class SerialService {
   void dispose() {
     close();
     _dataStreamController.close();
+    _imuStreamController.close();
     _lineStreamController.close();
     _textStreamController.close();
   }

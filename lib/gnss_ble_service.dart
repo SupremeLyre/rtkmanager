@@ -15,6 +15,8 @@ class GnssBleDevice {
   final String id;
   final String name;
   final int rssi;
+
+  bool get hasName => name.trim().isNotEmpty && name.trim() != '未命名设备';
 }
 
 /// Receives the ESP32 softAP firmware's Read + Notify GNSS characteristic.
@@ -36,6 +38,25 @@ class GnssBleService extends ChangeNotifier {
   Stream<String> get ggaStream => _gga.stream;
   // Map insertion order keeps each device in place when its RSSI changes.
   List<GnssBleDevice> get devices => _devices.values.toList();
+
+  /// Search covers all discoveries, including unnamed devices, without changing
+  /// discovery order or excluding receivers that omit advertised service UUIDs.
+  List<GnssBleDevice> filteredDevices({
+    String query = '',
+    bool includeUnnamed = false,
+  }) {
+    final text = query.trim().toLowerCase();
+    final address = text.replaceAll(RegExp(r'[\s:-]'), '');
+    return _devices.values.where((device) {
+      if (text.isEmpty) return includeUnnamed || device.hasName;
+      return device.name.toLowerCase().contains(text) ||
+          (address.isNotEmpty &&
+              device.id
+                  .toLowerCase()
+                  .replaceAll(RegExp(r'[\s:-]'), '')
+                  .contains(address));
+    }).toList();
+  }
 
   GnssBleConnection connection = GnssBleConnection.disconnected;
   GnssBleDevice? device;
@@ -145,9 +166,13 @@ class GnssBleService extends ChangeNotifier {
     switch (event['type']) {
       case 'device':
         final id = event['id'] as String;
+        final name = (event['name'] as String).trim();
         _devices[id] = GnssBleDevice(
           id: id,
-          name: event['name'] as String,
+          // Scan responses can supply a name that later advertisements omit.
+          name: name.isEmpty || name == '未命名设备'
+              ? _devices[id]?.name ?? '未命名设备'
+              : name,
           rssi: event['rssi'] as int,
         );
       case 'scanning':

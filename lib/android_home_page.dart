@@ -8,8 +8,10 @@ import 'gga_log_service.dart';
 import 'gnss_ble_service.dart';
 import 'positioning_page.dart';
 import 'phone_capture_page.dart';
+import 'phone_capture_service.dart';
+import 'imu_visualization_page.dart';
 import 'imu_batch_decode_page.dart';
-import 'mobile_ui.dart';
+import 'app_ui.dart';
 
 class AndroidHomePage extends StatefulWidget {
   const AndroidHomePage({super.key, this.bluetooth, this.logs});
@@ -24,6 +26,7 @@ class _AndroidHomePageState extends State<AndroidHomePage>
     with WidgetsBindingObserver {
   late final GnssBleService _bluetooth = widget.bluetooth ?? GnssBleService();
   late final GgaLogService _logs;
+  final PhoneCaptureService _capture = PhoneCaptureService();
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   int _selectedIndex = 0;
   bool _importingFile = false;
@@ -45,6 +48,7 @@ class _AndroidHomePageState extends State<AndroidHomePage>
   void _openDrawer() => _scaffoldKey.currentState?.openDrawer();
 
   void _selectPage(int index) {
+    if (index == 3 || index == 5) _capture.listen();
     if (index != 0) unawaited(_bluetooth.stopScan());
     setState(() {
       _selectedIndex = index;
@@ -59,82 +63,18 @@ class _AndroidHomePageState extends State<AndroidHomePage>
     data: mobileTheme(Theme.of(context)),
     child: Scaffold(
       key: _scaffoldKey,
-      drawer: SizedBox(
-        width: MediaQuery.sizeOf(context).width < 360 ? 280 : 304,
-        child: Drawer(
-          child: ListView(
-            padding: EdgeInsets.zero,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primaryContainer,
-                ),
-                alignment: Alignment.bottomLeft,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const MobileIconTile(
-                      Icons.satellite_alt,
-                      active: true,
-                      size: 48,
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      'RTK Manager',
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.onPrimaryContainer,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 21,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'by SupremeLyre',
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.onPrimaryContainer,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-              for (final (index, icon, title, subtitle) in const [
-                (0, Icons.bluetooth, '设备连接', '发现与连接 GNSS'),
-                (1, Icons.map_outlined, '定位结果', '实时位置与轨迹回放'),
-                (2, Icons.folder_open_outlined, '日志存储', 'GGA 文件与分享'),
-                (3, Icons.sensors, '手机数据采集', 'GNSS · IMU · 磁场'),
-                (4, Icons.transform, 'IMU 批量解码', '原始数据转 CSV'),
-              ])
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 4,
-                  ),
-                  child: ListTile(
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    selectedTileColor: Theme.of(
-                      context,
-                    ).colorScheme.primaryContainer.withValues(alpha: .6),
-                    leading: Icon(icon),
-                    title: Text(
-                      title,
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    subtitle: Text(
-                      subtitle,
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                    selected: _selectedIndex == index,
-                    onTap: () => _selectPage(index),
-                  ),
-                ),
-            ],
-          ),
-        ),
+      drawer: AppNavigationDrawer(
+        selectedIndex: _selectedIndex,
+        onSelected: _selectPage,
+        keyPrefix: 'android-nav',
+        destinations: [
+          AppDestination(Icons.bluetooth, '设备连接', '发现与连接 GNSS'),
+          AppDestination(Icons.map_outlined, '定位结果', '实时位置与轨迹回放'),
+          AppDestination(Icons.folder_open_outlined, '日志存储', 'GGA 文件与分享'),
+          AppDestination(Icons.sensors, '手机数据采集', 'GNSS · IMU · 磁场'),
+          AppDestination(Icons.transform, 'IMU 批量解码', '原始数据转 CSV'),
+          AppDestination(Icons.show_chart, 'IMU 数据可视化', '六轴 IMU · 磁场实时曲线'),
+        ],
       ),
       body: IndexedStack(
         index: _selectedIndex,
@@ -162,13 +102,25 @@ class _AndroidHomePageState extends State<AndroidHomePage>
             active: _selectedIndex == 2,
           ),
           if (_captureVisited)
-            PhoneCapturePage(onOpenDrawer: _openDrawer)
+            PhoneCapturePage(
+              onOpenDrawer: _openDrawer,
+              service: _capture,
+              onShowImu: () => _selectPage(5),
+            )
           else
             const SizedBox.shrink(),
           if (_decodeVisited)
             ImuBatchDecodePage(onOpenDrawer: _openDrawer)
           else
             const SizedBox.shrink(),
+          ImuVisualizationPage(
+            dataStream: _capture.imuDataStream,
+            sourceLabel: '手机传感器',
+            emptyMessage: '在“手机数据采集”中同时检测加速度计与陀螺仪，勾选 IMU 并开始采集后查看曲线。磁场按独立频率显示。',
+            onOpenDrawer: _openDrawer,
+            onOpenSource: () => _selectPage(3),
+            active: _selectedIndex == 5,
+          ),
         ],
       ),
     ),
@@ -179,6 +131,7 @@ class _AndroidHomePageState extends State<AndroidHomePage>
     WidgetsBinding.instance.removeObserver(this);
     if (widget.logs == null) _logs.dispose();
     if (widget.bluetooth == null) _bluetooth.dispose();
+    _capture.dispose();
     super.dispose();
   }
 }

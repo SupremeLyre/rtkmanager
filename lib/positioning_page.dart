@@ -11,7 +11,7 @@ import 'serial_service.dart';
 import 'imu_data_parser.dart';
 import 'gga_sentence_extractor.dart';
 import 'gnss_ble_service.dart';
-import 'mobile_ui.dart';
+import 'app_ui.dart';
 
 class MobilePositioningPage extends StatefulWidget {
   final VoidCallback? onOpenDrawer;
@@ -893,7 +893,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     ),
   ];
 
-  Widget _mobilePositionSummary() {
+  Widget _positionSummary() {
     final info = _currentInfo;
     final colors = Theme.of(context).colorScheme;
     final compact =
@@ -927,7 +927,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                               : _getStatusText(
                                   info.status,
                                   false,
-                                  pointType: PointType.gga,
+                                  pointType: info.type,
                                 ),
                           style: TextStyle(
                             fontSize: 14,
@@ -938,8 +938,10 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                         const SizedBox(height: 4),
                         Text(
                           info == null
-                              ? '连接设备或导入 GGA 文件'
-                              : 'GGA UTC: ${info.utcTime}',
+                              ? (widget.ggaOnly
+                                    ? '连接设备或导入 GGA 文件'
+                                    : '连接主串口或导入定位文件')
+                              : '${info.type == PointType.pppsol ? 'PPP' : 'GGA'} UTC: ${info.utcTime}',
                           style: TextStyle(
                             fontSize: 12,
                             color: colors.onSurfaceVariant,
@@ -970,7 +972,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                     _mapReading(
                       Icons.track_changes,
                       info.dop1.toStringAsFixed(2),
-                      'HDOP',
+                      info.type == PointType.pppsol ? 'DOP 1' : 'HDOP',
                     ),
                     _mapReading(
                       Icons.height,
@@ -1050,10 +1052,12 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                   ),
                 ],
               ),
-              Text('GGA UTC: ${info.utcTime}'),
+              Text(
+                '${info.type == PointType.pppsol ? 'PPP' : 'GGA'} UTC: ${info.utcTime}',
+              ),
               const SizedBox(height: 16),
               MobileStatusChip(
-                _getStatusText(info.status, false, pointType: PointType.gga),
+                _getStatusText(info.status, false, pointType: info.type),
                 icon: Icons.gps_fixed,
                 emphasized: true,
               ),
@@ -1066,7 +1070,9 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                     icon: Icons.satellite_alt,
                   ),
                   MobileMetric(
-                    label: '水平精度因子 HDOP',
+                    label: info.type == PointType.pppsol
+                        ? '精度因子 DOP 1'
+                        : '水平精度因子 HDOP',
                     value: info.dop1.toStringAsFixed(2),
                     icon: Icons.track_changes,
                   ),
@@ -1075,7 +1081,31 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                     value: '${info.altitude.toStringAsFixed(2)} m',
                     icon: Icons.height,
                   ),
-                  if ([2, 4, 5].contains(info.status))
+                  if (info.type == PointType.pppsol) ...[
+                    MobileMetric(
+                      label: '速度',
+                      value: '${info.speed.toStringAsFixed(3)} m/s',
+                      icon: Icons.speed_outlined,
+                    ),
+                    MobileMetric(
+                      label: '位置精度',
+                      value: '${info.posAcc.toStringAsFixed(3)} m',
+                      icon: Icons.my_location,
+                    ),
+                    MobileMetric(
+                      label: '速度精度',
+                      value: '${info.speedAcc.toStringAsFixed(3)} m/s',
+                      icon: Icons.speed,
+                    ),
+                    MobileMetric(
+                      label: 'DOP 2 / DOP 3',
+                      value:
+                          '${info.dop2.toStringAsFixed(2)} / ${info.dop3.toStringAsFixed(2)}',
+                      icon: Icons.track_changes,
+                    ),
+                  ],
+                  if (info.type == PointType.gga &&
+                      [2, 4, 5].contains(info.status))
                     MobileMetric(
                       label: '差分龄期',
                       value:
@@ -1114,35 +1144,9 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     }
 
     return Scaffold(
-      appBar: AppBar(
-        toolbarHeight: widget.ggaOnly ? 56 : 36,
-        leadingWidth: widget.ggaOnly ? 56 : null,
-        titleSpacing: widget.ggaOnly ? 8 : null,
-        leading: widget.onOpenDrawer == null
-            ? null
-            : IconButton(
-                tooltip: '打开导航',
-                icon: const Icon(Icons.menu),
-                iconSize: 20,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(),
-                onPressed: widget.onOpenDrawer,
-              ),
-        title: widget.ggaOnly
-            ? const FittedBox(
-                fit: BoxFit.scaleDown,
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  '定位结果',
-                  maxLines: 1,
-                  softWrap: false,
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                ),
-              )
-            : const Text(
-                '定位结果 (高德)',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-              ),
+      appBar: AppPageBar(
+        title: '定位结果',
+        onOpenDrawer: widget.onOpenDrawer,
         bottom: widget.ggaOnly
             ? PreferredSize(
                 preferredSize: const Size.fromHeight(52),
@@ -1341,143 +1345,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                 ),
             ],
           ),
-          if (widget.ggaOnly)
-            Positioned(
-              top: 12,
-              left: 12,
-              right: 12,
-              child: _mobilePositionSummary(),
-            ),
-          if (!widget.ggaOnly && _currentInfo != null)
-            Positioned(
-              top: 10,
-              left: 10,
-              child: Container(
-                padding: const EdgeInsets.all(8.0),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.6),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      "${_currentInfo!.type == PointType.gga ? 'GGA' : 'PPP'} UTC: ${_currentInfo!.utcTime}",
-                      style: const TextStyle(color: Colors.white, fontSize: 12),
-                    ),
-                    const SizedBox(height: 2),
-                    Row(
-                      children: [
-                        const Text(
-                          "Stat: ",
-                          style: TextStyle(color: Colors.white, fontSize: 12),
-                        ),
-                        Text(
-                          _getStatusText(
-                            _currentInfo!.status,
-                            false,
-                            pointType: _currentInfo!.type,
-                          ),
-                          style: TextStyle(
-                            color: _getColorForStatus(
-                              _currentInfo!.status,
-                              false,
-                              pointType: _currentInfo!.type,
-                            ),
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 2),
-                    if (_currentInfo!.type == PointType.pppsol) ...[
-                      Text(
-                        "Speed: ${_currentInfo!.speed.toStringAsFixed(3)} m/s",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        "Altitude: ${_currentInfo!.altitude.toStringAsFixed(2)} m",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        "Pos Acc: ${_currentInfo!.posAcc.toStringAsFixed(3)} m",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        "Spd Acc: ${_currentInfo!.speedAcc.toStringAsFixed(3)} m/s",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        "DOP: ${_currentInfo!.dop1.toStringAsFixed(2)} / ${_currentInfo!.dop2.toStringAsFixed(2)} / ${_currentInfo!.dop3.toStringAsFixed(2)}",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        "Sats: ${_currentInfo!.satellites}",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ] else if (_currentInfo!.type == PointType.gga) ...[
-                      Text(
-                        "Altitude: ${_currentInfo!.altitude.toStringAsFixed(2)} m",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        "HDOP: ${_currentInfo!.dop1.toStringAsFixed(2)}",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        "Sats: ${_currentInfo!.satellites}",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                        ),
-                      ),
-                      if ([2, 4, 5].contains(_currentInfo!.status)) ...[
-                        const SizedBox(height: 2),
-                        Text(
-                          "Diff Age: ${_currentInfo!.differentialAge?.toStringAsFixed(1) ?? '--'} s",
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                    ],
-                  ],
-                ),
-              ),
-            ),
+          if (widget.ggaOnly || _currentImuInfo == null)
+            Positioned(top: 12, left: 12, right: 12, child: _positionSummary()),
           if (!widget.ggaOnly && _currentImuInfo != null)
             Positioned(
               top: 10,

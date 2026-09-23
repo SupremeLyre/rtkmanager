@@ -3,6 +3,22 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:rtkmanager/imu_data_parser.dart';
 
 void main() {
+  test('native paired IMU frame produces exactly one six-axis record', () {
+    final result = <ImuData>[];
+    ImuDataParser().parseData(
+      File('test/fixtures/phone_imu_paired.bin').readAsBytesSync(),
+      result.add,
+      broadcast: false,
+    );
+    expect(result, hasLength(1));
+    expect(result.single.ax, 1);
+    expect(result.single.ay, 0);
+    expect(result.single.az, -1);
+    expect(result.single.wx, closeTo(180, .00001));
+    expect(result.single.wy, 0);
+    expect(result.single.wz, 0);
+    expect(result.single.gpsTowNanos, 123456123456789);
+  });
   test('parses actual native sensor frames with GPST and independent axes', () {
     final fixture = File('test/fixtures/phone_sensors.bin').readAsBytesSync();
     final result = <ImuData>[];

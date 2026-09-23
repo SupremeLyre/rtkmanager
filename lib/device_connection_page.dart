@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 
 import 'gnss_ble_service.dart';
 import 'gga_log_service.dart';
-import 'mobile_ui.dart';
+import 'app_ui.dart';
 
-class DeviceConnectionPage extends StatelessWidget {
+class DeviceConnectionPage extends StatefulWidget {
   const DeviceConnectionPage({
     super.key,
     required this.service,
@@ -21,39 +21,45 @@ class DeviceConnectionPage extends StatelessWidget {
   final GgaLogService? logs;
 
   @override
+  State<DeviceConnectionPage> createState() => _DeviceConnectionPageState();
+}
+
+class _DeviceConnectionPageState extends State<DeviceConnectionPage> {
+  final _search = TextEditingController();
+  bool _showUnnamed = false;
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      toolbarHeight: 56,
-      leading: IconButton(
-        tooltip: '打开导航',
-        icon: const Icon(Icons.menu),
-        onPressed: onOpenDrawer,
-      ),
-      title: const FittedBox(
-        fit: BoxFit.scaleDown,
-        alignment: Alignment.centerLeft,
-        child: Text(
-          '设备连接',
-          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-        ),
-      ),
-    ),
+    appBar: AppPageBar(title: '设备连接', onOpenDrawer: widget.onOpenDrawer),
     body: AnimatedBuilder(
-      animation: service,
+      animation: widget.service,
       builder: (context, _) {
+        final service = widget.service;
+        final logs = widget.logs;
+        final importingFile = widget.importingFile;
         final busy = service.scanning || service.requestingScan;
         final connected = service.connection == GnssBleConnection.connected;
+        final devices = service.filteredDevices(
+          query: _search.text,
+          includeUnnamed: _showUnnamed,
+        );
         return ListView(
           padding: const EdgeInsets.all(16),
           children: [
             if (logs != null)
               AnimatedBuilder(
-                animation: logs!,
-                builder: (context, _) => logs!.error == null
+                animation: logs,
+                builder: (context, _) => logs.error == null
                     ? const SizedBox.shrink()
                     : Padding(
                         padding: const EdgeInsets.only(bottom: 12),
-                        child: MobileNotice(logs!.error!, error: true),
+                        child: MobileNotice(logs.error!, error: true),
                       ),
               ),
             if (service.error != null) ...[
@@ -94,7 +100,7 @@ class DeviceConnectionPage extends StatelessWidget {
               action: service.isActive
                   ? connected
                         ? FilledButton.icon(
-                            onPressed: onShowPositioning,
+                            onPressed: widget.onShowPositioning,
                             icon: const Icon(Icons.map_outlined),
                             label: const Text('查看定位结果'),
                           )
@@ -178,26 +184,79 @@ class DeviceConnectionPage extends StatelessWidget {
               MobileSectionTitle(
                 '附近的设备',
                 icon: Icons.radar,
-                trailing: MobileStatusChip(
-                  '${service.devices.length} 台',
-                  icon: Icons.bluetooth,
+                trailing: Flexible(
+                  child: MobileStatusChip(
+                    '${devices.length} / ${service.devices.length} 台',
+                    icon: Icons.bluetooth,
+                  ),
                 ),
               ),
+              MobilePanel(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TextField(
+                      controller: _search,
+                      onChanged: (_) => setState(() {}),
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      decoration: InputDecoration(
+                        labelText: '设备名称或蓝牙地址',
+                        prefixIcon: const Icon(Icons.search),
+                        suffixIcon: _search.text.isEmpty
+                            ? null
+                            : IconButton(
+                                tooltip: '清除搜索',
+                                icon: const Icon(Icons.clear),
+                                onPressed: () => setState(_search.clear),
+                              ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    FilterChip(
+                      label: const Text('显示未命名设备'),
+                      selected: _showUnnamed,
+                      avatar: const Icon(Icons.bluetooth_searching, size: 18),
+                      onSelected: (value) =>
+                          setState(() => _showUnnamed = value),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _search.text.trim().isEmpty
+                          ? _showUnnamed
+                                ? '已显示全部扫描结果。'
+                                : '默认隐藏未命名设备，找不到时可开启显示。'
+                          : '正在全部扫描结果中搜索，包括未命名设备。',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
               if (busy)
                 const Padding(
                   padding: EdgeInsets.only(bottom: 12),
                   child: LinearProgressIndicator(),
                 ),
-              if (service.devices.isEmpty)
+              if (devices.isEmpty)
                 MobileEmptyState(
                   icon: Icons.radar,
-                  title: busy ? '正在查找设备…' : '等待发现设备',
-                  message: '请确认设备已开机、在附近，且正在广播。',
+                  title: service.devices.isEmpty
+                      ? busy
+                            ? '正在查找设备…'
+                            : '等待发现设备'
+                      : '没有匹配的设备',
+                  message: service.devices.isEmpty
+                      ? '请确认设备已开机、在附近，且正在广播。'
+                      : _search.text.trim().isNotEmpty
+                      ? '试试设备名称的一部分或蓝牙地址，或清除搜索。'
+                      : '已发现 ${service.devices.length} 台未命名设备，可开启上方开关查看。',
                 ),
-              for (final device in service.devices)
+              for (final device in devices)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 10),
                   child: Card(
+                    key: ValueKey('ble-device-${device.id}'),
                     child: ListTile(
                       contentPadding: const EdgeInsets.symmetric(
                         horizontal: 16,

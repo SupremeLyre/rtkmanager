@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter_libserialport/flutter_libserialport.dart';
 import 'serial_service.dart';
 import 'ntrip_service.dart';
+import 'app_ui.dart';
 import 'imu_data_parser.dart';
 import 'gga_sentence_extractor.dart';
 
@@ -138,13 +139,6 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
         _outputFilePath = outputFile;
       });
     }
-  }
-
-  Color _getStatusColor() {
-    if (_ipController.text.isEmpty) {
-      return Colors.grey;
-    }
-    return _ntripService.isConnected ? Colors.green : Colors.red;
   }
 
   void _disconnect({bool intentional = true}) {
@@ -364,9 +358,10 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
     String hh = (data.utcHour ?? 0).toString().padLeft(2, '0');
     String mm = (data.utcMin ?? 0).toString().padLeft(2, '0');
     String ss = (data.utcSec ?? 0).toString().padLeft(2, '0');
-    String mss = ((data.utcSubsecondUsec ?? 0) ~/ 10000)
-        .toString()
-        .padLeft(2, '0');
+    String mss = ((data.utcSubsecondUsec ?? 0) ~/ 10000).toString().padLeft(
+      2,
+      '0',
+    );
     String timeStr = "$hh$mm$ss.$mss";
 
     // Lat: ddmm.mmmmmmm
@@ -462,549 +457,240 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
     _addLog("开始监听串口 GNGGA 数据并上传...");
   }
 
-  Widget _buildConfigCard() {
-    return Card(
-      elevation: 4,
-      child: Padding(
-        padding: const EdgeInsets.all(8.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildConfigCard() => AppSectionCard(
+    title: 'NTRIP 连接配置',
+    icon: Icons.settings_input_antenna,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        AppFieldPair(
+          first: TextField(
+            controller: _ipController,
+            decoration: InputDecoration(
+              labelText: 'IP 地址 / 域名',
+              suffixIcon: PopupMenuButton<String>(
+                tooltip: '常用地址',
+                icon: const Icon(Icons.arrow_drop_down),
+                onSelected: (value) => _ipController.text = value,
+                itemBuilder: (_) =>
+                    [
+                          '116.211.238.25',
+                          '203.107.45.154',
+                          'sdk.pnt.10086.cn',
+                          '103.143.19.54',
+                          'rtk.huacenav.com',
+                          '140.143.212.42',
+                          'ntrip.gnsslab.cn',
+                        ]
+                        .map(
+                          (value) =>
+                              PopupMenuItem(value: value, child: Text(value)),
+                        )
+                        .toList(),
+              ),
+            ),
+          ),
+          second: TextField(
+            controller: _portController,
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(
+              labelText: '端口',
+              suffixIcon: PopupMenuButton<String>(
+                tooltip: '常用端口',
+                icon: const Icon(Icons.arrow_drop_down),
+                onSelected: (value) => _portController.text = value,
+                itemBuilder: (_) => ['2101', '8001', '8002', '8003']
+                    .map(
+                      (value) =>
+                          PopupMenuItem(value: value, child: Text(value)),
+                    )
+                    .toList(),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        AppFieldPair(
+          first: TextField(
+            controller: _userController,
+            decoration: const InputDecoration(labelText: '用户名'),
+          ),
+          second: TextField(
+            controller: _passwordController,
+            obscureText: !_isPasswordVisible,
+            decoration: InputDecoration(
+              labelText: '密码',
+              suffixIcon: IconButton(
+                tooltip: _isPasswordVisible ? '隐藏密码' : '显示密码',
+                icon: Icon(
+                  _isPasswordVisible ? Icons.visibility_off : Icons.visibility,
+                ),
+                onPressed: () =>
+                    setState(() => _isPasswordVisible = !_isPasswordVisible),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(
+          isExpanded: true,
+          initialValue: _selectedMountPoint,
+          decoration: const InputDecoration(labelText: '挂载点'),
+          items: _mountPoints
+              .map((mp) => DropdownMenuItem(value: mp, child: Text(mp)))
+              .toList(),
+          onChanged: (value) => setState(() => _selectedMountPoint = value),
+        ),
+        const SizedBox(height: 8),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: OutlinedButton.icon(
+            onPressed: _getMountPoints,
+            icon: const Icon(Icons.refresh),
+            label: const Text('获取列表'),
+          ),
+        ),
+        const MobileSectionTitle('GGA 来源', icon: Icons.my_location),
+        AppFieldPair(
+          first: DropdownButtonFormField<String>(
+            isExpanded: true,
+            initialValue:
+                ['主串口', '从IMU解析', ..._availablePorts].contains(_ggaSourcePort)
+                ? _ggaSourcePort
+                : '主串口',
+            decoration: const InputDecoration(labelText: 'GGA来源串口'),
+            items: {'主串口', '从IMU解析', ..._availablePorts}
+                .map(
+                  (port) => DropdownMenuItem(
+                    value: port,
+                    child: Text(port, overflow: TextOverflow.ellipsis),
+                  ),
+                )
+                .toList(),
+            onChanged: (value) {
+              if (value != null) setState(() => _ggaSourcePort = value);
+            },
+          ),
+          second: _baudField(
+            _ggaSourceBaudRate,
+            (_ggaSourcePort == '主串口' || _ggaSourcePort == '从IMU解析')
+                ? null
+                : (value) => setState(() => _ggaSourceBaudRate = value),
+          ),
+        ),
+        const MobileSectionTitle('数据输出', icon: Icons.output_outlined),
+        for (final (index, item) in _outputSerialItems.indexed)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Column(
+              children: [
+                AppFieldPair(
+                  first: DropdownButtonFormField<String>(
+                    isExpanded: true,
+                    initialValue: item.portName,
+                    decoration: const InputDecoration(labelText: '串口'),
+                    items: _availablePorts
+                        .map(
+                          (port) => DropdownMenuItem(
+                            value: port,
+                            child: Text(port, overflow: TextOverflow.ellipsis),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) => setState(() => item.portName = value),
+                  ),
+                  second: _baudField(
+                    item.baudRate,
+                    (value) => setState(() => item.baudRate = value),
+                  ),
+                ),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: IconButton(
+                    tooltip: '删除输出串口',
+                    icon: const Icon(Icons.delete),
+                    onPressed: () =>
+                        setState(() => _outputSerialItems.removeAt(index)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            const Text(
-              'NTRIP 连接配置',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            OutlinedButton.icon(
+              onPressed: () =>
+                  setState(() => _outputSerialItems.add(SerialOutputItem())),
+              icon: const Icon(Icons.add),
+              label: const Text('添加输出串口'),
             ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  flex: 2,
-                  child: TextField(
-                    controller: _ipController,
-                    style: const TextStyle(fontSize: 14),
-                    decoration: InputDecoration(
-                      labelText: 'IP 地址 / 域名',
-                      border: const OutlineInputBorder(),
-                      isDense: true,
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 8,
-                      ),
-                      suffixIconConstraints: const BoxConstraints(
-                        minWidth: 32,
-                        maxHeight: 32,
-                      ),
-                      suffixIcon: PopupMenuButton<String>(
-                        icon: const Icon(Icons.arrow_drop_down, size: 20),
-                        padding: EdgeInsets.zero,
-                        tooltip: '常用地址',
-                        onSelected: (String value) {
-                          _ipController.text = value;
-                        },
-                        itemBuilder: (BuildContext context) {
-                          return [
-                            '116.211.238.25', // whcs
-                            '203.107.45.154', // Qianxun
-                            'sdk.pnt.10086.cn', // CMCC
-                            '103.143.19.54', // Sixents
-                            'rtk.huacenav.com', // CHCNAV
-                            '140.143.212.42', // Tencent Cloud / Others
-                            'ntrip.gnsslab.cn', // IGS WHU
-                          ].map((String choice) {
-                            return PopupMenuItem<String>(
-                              value: choice,
-                              height: 32,
-                              child: Text(
-                                choice,
-                                style: const TextStyle(fontSize: 13),
-                              ),
-                            );
-                          }).toList();
-                        },
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Expanded(
-                  flex: 1,
-                  child: TextField(
-                    controller: _portController,
-                    style: const TextStyle(fontSize: 14),
-                    decoration: InputDecoration(
-                      labelText: '端口',
-                      border: const OutlineInputBorder(),
-                      isDense: true,
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 8,
-                      ),
-                      suffixIconConstraints: const BoxConstraints(
-                        minWidth: 32,
-                        maxHeight: 32,
-                      ),
-                      suffixIcon: PopupMenuButton<String>(
-                        icon: const Icon(Icons.arrow_drop_down, size: 20),
-                        padding: EdgeInsets.zero,
-                        tooltip: '常用端口',
-                        onSelected: (String value) {
-                          _portController.text = value;
-                        },
-                        itemBuilder: (BuildContext context) {
-                          return [
-                            '2101', // Standard
-                            '8001',
-                            '8002',
-                            '8003',
-                          ].map((String choice) {
-                            return PopupMenuItem<String>(
-                              value: choice,
-                              height: 32,
-                              child: Text(
-                                choice,
-                                style: const TextStyle(fontSize: 13),
-                              ),
-                            );
-                          }).toList();
-                        },
-                      ),
-                    ),
-                    keyboardType: TextInputType.number,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _userController,
-                    style: const TextStyle(fontSize: 14),
-                    decoration: const InputDecoration(
-                      labelText: '用户名',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                      contentPadding: EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 8,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: TextField(
-                    controller: _passwordController,
-                    style: const TextStyle(fontSize: 14),
-                    decoration: InputDecoration(
-                      labelText: '密码',
-                      border: const OutlineInputBorder(),
-                      isDense: true,
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 8,
-                      ),
-                      suffixIconConstraints: const BoxConstraints(
-                        minWidth: 32,
-                        maxHeight: 32,
-                      ),
-                      suffixIcon: IconButton(
-                        icon: Icon(
-                          _isPasswordVisible
-                              ? Icons.visibility
-                              : Icons.visibility_off,
-                          size: 18,
-                        ),
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                        onPressed: () {
-                          setState(() {
-                            _isPasswordVisible = !_isPasswordVisible;
-                          });
-                        },
-                      ),
-                    ),
-                    obscureText: !_isPasswordVisible,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Row(
-              children: [
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    isExpanded: true,
-                    initialValue: _selectedMountPoint,
-                    style: const TextStyle(fontSize: 14, color: Colors.black),
-                    decoration: const InputDecoration(
-                      labelText: '挂载点',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                      contentPadding: EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 8,
-                      ),
-                    ),
-                    items: _mountPoints.map((mp) {
-                      return DropdownMenuItem(
-                        value: mp,
-                        child: Text(mp, style: const TextStyle(fontSize: 14)),
-                      );
-                    }).toList(),
-                    onChanged: (value) {
-                      setState(() {
-                        _selectedMountPoint = value;
-                      });
-                    },
-                  ),
-                ),
-                const SizedBox(width: 4),
-                SizedBox(
-                  height: 36,
-                  child: ElevatedButton(
-                    onPressed: _getMountPoints,
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                    ),
-                    child: const Text('获取列表', style: TextStyle(fontSize: 13)),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Row(
-              children: [
-                Expanded(
-                  flex: 2,
-                  child: DropdownButtonFormField<String>(
-                    isExpanded: true,
-                    initialValue:
-                        [
-                          '主串口',
-                          '从IMU解析',
-                          ..._availablePorts,
-                        ].contains(_ggaSourcePort)
-                        ? _ggaSourcePort
-                        : '主串口',
-                    style: const TextStyle(
-                      fontSize: 14,
-                      color: Colors.black,
-                      fontFamily: 'SourceHanSansHWSC',
-                    ),
-                    decoration: const InputDecoration(
-                      labelText: 'GGA来源串口',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                      contentPadding: EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 8,
-                      ),
-                    ),
-                    items: {'主串口', '从IMU解析', ..._availablePorts}.map((port) {
-                      return DropdownMenuItem(
-                        value: port,
-                        child: Text(
-                          port,
-                          style: const TextStyle(
-                            fontSize: 14,
-                            color: Colors.black,
-                            fontFamily: 'SourceHanSansHWSC',
-                          ),
-                        ),
-                      );
-                    }).toList(),
-                    onChanged: (value) {
-                      setState(() {
-                        _ggaSourcePort = value!;
-                      });
-                    },
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Expanded(
-                  flex: 1,
-                  child: DropdownButtonFormField<int>(
-                    isExpanded: true,
-                    initialValue: _ggaSourceBaudRate,
-                    style: const TextStyle(fontSize: 14, color: Colors.black),
-                    decoration: const InputDecoration(
-                      labelText: '波特率',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                      contentPadding: EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 8,
-                      ),
-                    ),
-                    items: _baudRates.map((rate) {
-                      return DropdownMenuItem(
-                        value: rate,
-                        child: Text(
-                          rate.toString(),
-                          style: const TextStyle(
-                            fontSize: 14,
-                            color: Colors.black,
-                          ),
-                        ),
-                      );
-                    }).toList(),
-                    onChanged:
-                        (_ggaSourcePort == '主串口' || _ggaSourcePort == '从IMU解析')
-                        ? null
-                        : (value) {
-                            setState(() {
-                              _ggaSourceBaudRate = value!;
-                            });
-                          },
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              "数据输出方式:",
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-            ),
-            Column(
-              children: [
-                ..._outputSerialItems.asMap().entries.map((entry) {
-                  int index = entry.key;
-                  SerialOutputItem item = entry.value;
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 4.0),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          flex: 2,
-                          child: DropdownButtonFormField<String>(
-                            isExpanded: true,
-                            initialValue: item.portName,
-                            style: const TextStyle(
-                              fontSize: 14,
-                              color: Colors.black,
-                            ),
-                            decoration: const InputDecoration(
-                              labelText: '串口',
-                              border: OutlineInputBorder(),
-                              isDense: true,
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 8,
-                              ),
-                            ),
-                            items: _availablePorts.map((port) {
-                              return DropdownMenuItem(
-                                value: port,
-                                child: Text(
-                                  port,
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    color: Colors.black,
-                                  ),
-                                ),
-                              );
-                            }).toList(),
-                            onChanged: (value) {
-                              setState(() {
-                                item.portName = value;
-                              });
-                            },
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                        Expanded(
-                          flex: 1,
-                          child: DropdownButtonFormField<int>(
-                            isExpanded: true,
-                            initialValue: item.baudRate,
-                            style: const TextStyle(
-                              fontSize: 14,
-                              color: Colors.black,
-                            ),
-                            decoration: const InputDecoration(
-                              labelText: '波特率',
-                              border: OutlineInputBorder(),
-                              isDense: true,
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 8,
-                              ),
-                            ),
-                            items: _baudRates.map((rate) {
-                              return DropdownMenuItem(
-                                value: rate,
-                                child: Text(
-                                  rate.toString(),
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    color: Colors.black,
-                                  ),
-                                ),
-                              );
-                            }).toList(),
-                            onChanged: (value) {
-                              setState(() {
-                                item.baudRate = value!;
-                              });
-                            },
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.red),
-                          iconSize: 20,
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
-                          onPressed: () {
-                            setState(() {
-                              _outputSerialItems.removeAt(index);
-                            });
-                          },
-                        ),
-                      ],
-                    ),
-                  );
-                }),
-                Row(
-                  children: [
-                    SizedBox(
-                      height: 32,
-                      child: ElevatedButton.icon(
-                        onPressed: () {
-                          setState(() {
-                            _outputSerialItems.add(SerialOutputItem());
-                          });
-                        },
-                        icon: const Icon(Icons.add, size: 16),
-                        label: const Text(
-                          "添加输出串口",
-                          style: TextStyle(fontSize: 13),
-                        ),
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                    IconButton(
-                      icon: const Icon(Icons.refresh),
-                      iconSize: 20,
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                      onPressed: _refreshPorts,
-                      tooltip: '刷新串口列表',
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                SizedBox(
-                  height: 32,
-                  child: CheckboxListTile(
-                    title: const Text('输出到文件', style: TextStyle(fontSize: 14)),
-                    value: _outputToFile,
-                    onChanged: (value) {
-                      setState(() {
-                        _outputToFile = value ?? false;
-                      });
-                    },
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    controlAffinity: ListTileControlAffinity.leading,
-                  ),
-                ),
-                if (_outputToFile)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 16.0, bottom: 4.0),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            _outputFilePath ?? '未选择文件',
-                            style: const TextStyle(
-                              color: Colors.grey,
-                              fontSize: 12,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        SizedBox(
-                          height: 28,
-                          child: ElevatedButton(
-                            onPressed: _pickFile,
-                            style: ElevatedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                              ),
-                            ),
-                            child: const Text(
-                              '选择文件',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Row(
-                  children: [
-                    SizedBox(
-                      height: 24,
-                      child: Switch(
-                        value: _autoReconnectEnabled,
-                        onChanged: (value) {
-                          setState(() {
-                            _autoReconnectEnabled = value;
-                          });
-                        },
-                      ),
-                    ),
-                    const Text("自动重连", style: TextStyle(fontSize: 14)),
-                  ],
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: SizedBox(
-                    height: 36,
-                    child: ElevatedButton.icon(
-                      onPressed: _connect,
-                      icon: Icon(
-                        _ntripService.isConnected ? Icons.link_off : Icons.link,
-                        size: 18,
-                      ),
-                      label: Text(
-                        _ntripService.isConnected ? '断开 NTRIP' : '连接 NTRIP',
-                        style: const TextStyle(fontSize: 14),
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 0),
-                        backgroundColor: _ntripService.isConnected
-                            ? Colors.red
-                            : Colors.blue,
-                        foregroundColor: Colors.white,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+            IconButton(
+              onPressed: _refreshPorts,
+              icon: const Icon(Icons.refresh),
+              tooltip: '刷新串口列表',
             ),
           ],
         ),
-      ),
-    );
-  }
+        CheckboxListTile(
+          title: const Text('输出到文件'),
+          value: _outputToFile,
+          contentPadding: EdgeInsets.zero,
+          controlAffinity: ListTileControlAffinity.leading,
+          onChanged: (value) => setState(() => _outputToFile = value ?? false),
+        ),
+        if (_outputToFile) ...[
+          SelectableText(
+            _outputFilePath ?? '未选择文件',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _pickFile,
+            icon: const Icon(Icons.folder_open),
+            label: const Text('选择文件'),
+          ),
+        ],
+        const Divider(height: 24),
+        SwitchListTile(
+          title: const Text('自动重连'),
+          contentPadding: EdgeInsets.zero,
+          value: _autoReconnectEnabled,
+          onChanged: (value) => setState(() => _autoReconnectEnabled = value),
+        ),
+        const SizedBox(height: 8),
+        FilledButton.icon(
+          onPressed: _connect,
+          icon: Icon(_ntripService.isConnected ? Icons.link_off : Icons.link),
+          label: Text(_ntripService.isConnected ? '断开连接' : '连接 NTRIP'),
+        ),
+      ],
+    ),
+  );
+
+  Widget _baudField(int value, ValueChanged<int>? onChanged) =>
+      DropdownButtonFormField<int>(
+        isExpanded: true,
+        initialValue: value,
+        decoration: const InputDecoration(labelText: '波特率'),
+        items: _baudRates
+            .map((rate) => DropdownMenuItem(value: rate, child: Text('$rate')))
+            .toList(),
+        onChanged: onChanged == null
+            ? null
+            : (value) {
+                if (value != null) onChanged(value);
+              },
+      );
 
   Widget _buildLogContainer() {
     return Container(
       padding: const EdgeInsets.all(8.0),
       decoration: BoxDecoration(
         color: Colors.black87,
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: Colors.grey),
       ),
       child: ListView.builder(
@@ -1026,70 +712,38 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        toolbarHeight: 36,
-        leading: IconButton(
-          icon: const Icon(Icons.menu),
-          iconSize: 20,
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(),
-          onPressed: widget.onOpenDrawer,
-        ),
-        title: const Text(
-          'RTK 配置',
-          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-        ),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 16.0),
-            child: Container(
-              width: 16,
-              height: 16,
-              decoration: BoxDecoration(
-                color: _getStatusColor(),
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white, width: 1.5),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.2),
-                    blurRadius: 2,
-                    offset: const Offset(0, 1),
-                  ),
-                ],
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppPageBar(title: 'RTK 配置', onOpenDrawer: widget.onOpenDrawer),
+    body: SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: AppColumns(
+        primaryFlex: 3,
+        secondaryFlex: 2,
+        primary: _buildConfigCard(),
+        secondary: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            MobileHero(
+              title: '连接差分服务',
+              description: '配置 NTRIP 服务与 GGA 来源，将差分数据转发至串口或保存到文件。',
+              icon: Icons.settings_input_antenna,
+              status: MobileStatusChip(
+                _ntripService.isConnected ? 'NTRIP 已连接' : 'NTRIP 未连接',
+                icon: _ntripService.isConnected ? Icons.link : Icons.link_off,
+                emphasized: _ntripService.isConnected,
               ),
             ),
-          ),
-        ],
-      ),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          bool isSmallHeight = constraints.maxHeight < 500;
-
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _buildConfigCard(),
-                const SizedBox(height: 20),
-                const Text(
-                  '运行日志',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  height: isSmallHeight ? 120 : 200,
-                  child: _buildLogContainer(),
-                ),
-              ],
+            const SizedBox(height: 16),
+            AppSectionCard(
+              title: '运行日志',
+              icon: Icons.receipt_long_outlined,
+              child: SizedBox(height: 220, child: _buildLogContainer()),
             ),
-          );
-        },
+          ],
+        ),
       ),
-    );
-  }
+    ),
+  );
 }
 
 class SerialOutputItem {

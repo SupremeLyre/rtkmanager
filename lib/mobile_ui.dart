@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 
-/// Shared visual language for the Android tools: blue, light and functional.
+/// Shared visual language for phone and desktop tools: blue and functional.
 ThemeData mobileTheme(ThemeData base) {
   final colors = base.colorScheme;
-  final shape = RoundedRectangleBorder(borderRadius: BorderRadius.circular(16));
+  final shape = RoundedRectangleBorder(
+    borderRadius: BorderRadius.circular(16),
+    side: BorderSide(color: colors.outlineVariant.withValues(alpha: .55)),
+  );
   return base.copyWith(
     scaffoldBackgroundColor: colors.surfaceContainerLowest,
     appBarTheme: base.appBarTheme.copyWith(
@@ -141,7 +144,7 @@ class MobileSectionTitle extends StatelessWidget {
             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
           ),
         ),
-        if (trailing != null) trailing!,
+        ?trailing,
       ],
     ),
   );
@@ -211,6 +214,16 @@ class MobileHero extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final illustration = ExcludeSemantics(
+      child: SizedBox(
+        width: 84,
+        height: 84,
+        child: CustomPaint(
+          painter: _SignalPainter(colors.primary),
+          child: Center(child: Icon(icon, size: 32, color: colors.primary)),
+        ),
+      ),
+    );
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -218,48 +231,57 @@ class MobileHero extends StatelessWidget {
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: colors.primary.withValues(alpha: .12)),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final wide = constraints.maxWidth >= 600;
+          final content = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: Align(alignment: Alignment.centerLeft, child: status),
-              ),
-              const SizedBox(width: 12),
-              ExcludeSemantics(
-                child: SizedBox(
-                  width: 84,
-                  height: 84,
-                  child: CustomPaint(
-                    painter: _SignalPainter(colors.primary),
-                    child: Center(
-                      child: Icon(icon, size: 32, color: colors.primary),
+              if (wide)
+                status
+              else
+                Row(
+                  children: [
+                    Expanded(
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: status,
+                      ),
                     ),
-                  ),
+                    const SizedBox(width: 12),
+                    illustration,
+                  ],
+                ),
+              const SizedBox(height: 12),
+              Text(
+                title,
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 23,
+                  color: colors.onSurface,
                 ),
               ),
+              const SizedBox(height: 8),
+              Text(
+                description,
+                style: TextStyle(color: colors.onSurfaceVariant, height: 1.6),
+              ),
+              if (action != null) ...[
+                const SizedBox(height: 20),
+                SizedBox(width: wide ? 360 : double.infinity, child: action!),
+              ],
             ],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            title,
-            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.w700,
-              fontSize: 23,
-              color: colors.onSurface,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            description,
-            style: TextStyle(color: colors.onSurfaceVariant, height: 1.6),
-          ),
-          if (action != null) ...[
-            const SizedBox(height: 20),
-            SizedBox(width: double.infinity, child: action!),
-          ],
-        ],
+          );
+          return wide
+              ? Row(
+                  children: [
+                    Expanded(child: content),
+                    const SizedBox(width: 24),
+                    illustration,
+                  ],
+                )
+              : content;
+        },
       ),
     );
   }
@@ -351,7 +373,7 @@ class MobileMetrics extends StatelessWidget {
               constraints.maxWidth < 400
           ? 1
           : constraints.maxWidth >= 600
-          ? children.length
+          ? children.length.clamp(1, 4)
           : 2;
       return Wrap(
         spacing: 12,

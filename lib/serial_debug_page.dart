@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'serial_service.dart';
 import 'ntrip_service.dart';
 import 'imu_data_parser.dart';
+import 'app_ui.dart';
 
 class SerialDebugPage extends StatefulWidget {
   final VoidCallback? onOpenDrawer;
@@ -145,13 +146,6 @@ class _SerialDebugPageState extends State<SerialDebugPage>
     if (mounted) setState(() {});
   }
 
-  Color _getNtripStatusColor() {
-    if (!_ntripService.hasConfig) {
-      return Colors.grey;
-    }
-    return _ntripService.isConnected ? Colors.green : Colors.red;
-  }
-
   String _formatBytes(int bytes) {
     if (bytes < 1024) return '$bytes B';
     return '${(bytes / 1024).toStringAsFixed(1)} KB';
@@ -212,135 +206,94 @@ class _SerialDebugPageState extends State<SerialDebugPage>
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        toolbarHeight: 36,
-        leading: widget.onOpenDrawer != null
-            ? IconButton(
-                icon: const Icon(Icons.menu),
-                iconSize: 20,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(),
-                onPressed: widget.onOpenDrawer,
-              )
-            : null,
-        title: const Text(
-          '串口调试助手',
-          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppPageBar(
+      title: '串口调试助手',
+      onOpenDrawer: widget.onOpenDrawer,
+      actions: [
+        IconButton(
+          onPressed: _addTab,
+          icon: const Icon(Icons.add),
+          tooltip: '新建串口连接',
         ),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 12.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(
-                  'RX: ${_formatBytes(_rxDataRate)}/s',
-                  style: const TextStyle(
-                    fontSize: 10,
-                    color: Colors.greenAccent,
-                  ),
-                ),
-                Text(
-                  'TX: ${_formatBytes(_txDataRate)}/s',
-                  style: const TextStyle(
-                    fontSize: 10,
-                    color: Colors.blueAccent,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.only(right: 8.0),
-            child: Container(
-              width: 16,
-              height: 16,
-              decoration: BoxDecoration(
-                color: _getNtripStatusColor(),
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white, width: 1.5),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.2),
-                    blurRadius: 2,
-                    offset: const Offset(0, 1),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.add),
-            iconSize: 20,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-            onPressed: _addTab,
-            tooltip: '新建串口连接',
-          ),
-          const SizedBox(width: 4),
-          Padding(
-            padding: const EdgeInsets.only(right: 8.0),
-            child: SizedBox(
-              width: 32,
-              height: 32,
-              child: IconButton(
-                icon: Icon(
-                  _isGlobalSaving ? Icons.save_as : Icons.save_alt,
-                  color: _isGlobalSaving ? Colors.redAccent : null,
-                ),
-                iconSize: 20,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(),
-                onPressed: _toggleGlobalSaving,
-                tooltip: _isGlobalSaving ? '停止所有保存' : '保存所有数据',
-              ),
-            ),
-          ),
-        ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(30),
-          child: TabBar(
-            controller: _tabController,
-            isScrollable: true,
-            labelPadding: const EdgeInsets.symmetric(horizontal: 8),
-            tabs: _tabs.asMap().entries.map((entry) {
-              int idx = entry.key;
-              SerialTabItem tab = entry.value;
-              return Tab(
-                height: 30,
+        IconButton(
+          onPressed: _toggleGlobalSaving,
+          icon: Icon(_isGlobalSaving ? Icons.save_as : Icons.save_alt),
+          tooltip: _isGlobalSaving ? '停止所有保存' : '保存所有数据',
+        ),
+        const SizedBox(width: 8),
+      ],
+      bottom: TabBar(
+        controller: _tabController,
+        isScrollable: true,
+        tabAlignment: TabAlignment.start,
+        tabs: _tabs
+            .asMap()
+            .entries
+            .map(
+              (entry) => Tab(
+                height: 48,
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(tab.title, style: const TextStyle(fontSize: 13)),
-                    if (tab.isClosable) ...[
-                      const SizedBox(width: 4),
-                      InkWell(
-                        onTap: () => _removeTab(idx),
-                        child: const Icon(Icons.close, size: 14),
+                    const Icon(Icons.usb, size: 18),
+                    const SizedBox(width: 8),
+                    Text(entry.value.title),
+                    if (entry.value.isClosable)
+                      IconButton(
+                        onPressed: () => _removeTab(entry.key),
+                        icon: const Icon(Icons.close, size: 18),
+                        tooltip: '关闭${entry.value.title}',
                       ),
-                    ],
                   ],
                 ),
-              );
-            }).toList(),
+              ),
+            )
+            .toList(),
+      ),
+    ),
+    body: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              MobileStatusChip(
+                '接收 ${_formatBytes(_rxDataRate)}/s',
+                icon: Icons.south_west,
+              ),
+              MobileStatusChip(
+                '发送 ${_formatBytes(_txDataRate)}/s',
+                icon: Icons.north_east,
+              ),
+              MobileStatusChip(
+                _ntripService.isConnected ? 'NTRIP 已连接' : 'NTRIP 未连接',
+                icon: Icons.settings_input_antenna,
+                emphasized: _ntripService.isConnected,
+              ),
+            ],
           ),
         ),
-      ),
-      body: TabBarView(
-        controller: _tabController,
-        children: _tabs.map((tab) {
-          return SerialDebugContent(
-            key: tab.key,
-            serialService: tab.service,
-            globalSaving: _isGlobalSaving,
-          );
-        }).toList(),
-      ),
-    );
-  }
+        Expanded(
+          child: TabBarView(
+            controller: _tabController,
+            children: _tabs
+                .map(
+                  (tab) => SerialDebugContent(
+                    key: tab.key,
+                    serialService: tab.service,
+                    globalSaving: _isGlobalSaving,
+                  ),
+                )
+                .toList(),
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 class SerialTabItem {
@@ -690,14 +643,26 @@ class SerialDebugContentState extends State<SerialDebugContent>
 
   Widget _buildLogArea() {
     return Container(
-      margin: const EdgeInsets.all(8.0),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        border: Border.all(color: Colors.grey),
-        borderRadius: BorderRadius.circular(4.0),
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        borderRadius: BorderRadius.circular(16),
         color: Colors.black87,
       ),
       child: Stack(
         children: [
+          if (_receivedData.isEmpty && _incompleteLine.isEmpty)
+            const Center(
+              child: Wrap(
+                alignment: WrapAlignment.center,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 12,
+                children: [
+                  Icon(Icons.terminal, color: Colors.white70, size: 32),
+                  Text('等待串口数据', style: TextStyle(color: Colors.white70)),
+                ],
+              ),
+            ),
           SelectionArea(
             child: ListView.builder(
               controller: _scrollController,
@@ -734,432 +699,188 @@ class SerialDebugContentState extends State<SerialDebugContent>
     );
   }
 
-  Widget _buildControlsArea(bool isSmallScreen) {
-    return Container(
-      padding: const EdgeInsets.all(4.0),
-      color: Colors.grey[200],
-      child: SingleChildScrollView(
-        child: Column(
-          children: [
-            // Panel 1: Serial Settings
-            Card(
-              elevation: 2,
-              child: Padding(
-                padding: const EdgeInsets.all(4.0),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: DropdownButtonFormField<String>(
-                            initialValue: _selectedPort,
-                            decoration: const InputDecoration(
-                              labelText: '串口',
-                              isDense: true,
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 8,
+  Widget _buildControlsArea() => SingleChildScrollView(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        AppSectionCard(
+          title: '串口连接',
+          icon: Icons.usb,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      initialValue: _selectedPort,
+                      isExpanded: true,
+                      decoration: const InputDecoration(labelText: '串口'),
+                      items: _availablePorts
+                          .map(
+                            (port) => DropdownMenuItem(
+                              value: port,
+                              child: Text(
+                                port,
+                                overflow: TextOverflow.ellipsis,
                               ),
-                              border: OutlineInputBorder(),
                             ),
-                            style: const TextStyle(
-                              fontSize: 14,
-                              color: Colors.black,
-                            ),
-                            items: _availablePorts.map((port) {
-                              return DropdownMenuItem(
-                                value: port,
-                                child: Text(
-                                  port,
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    color: Colors.black,
-                                  ),
-                                ),
-                              );
-                            }).toList(),
-                            onChanged: widget.serialService.isOpen
-                                ? null
-                                : (value) {
-                                    setState(() {
-                                      _selectedPort = value;
-                                    });
-                                  },
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.refresh),
-                          iconSize: 20,
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
-                          onPressed: _refreshPorts,
-                          tooltip: '刷新串口列表',
-                        ),
-                        const SizedBox(width: 4),
-                        Expanded(
-                          child: DropdownButtonFormField<int>(
-                            initialValue: _baudRate,
-                            decoration: const InputDecoration(
-                              labelText: '波特率',
-                              isDense: true,
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 8,
-                              ),
-                              border: OutlineInputBorder(),
-                            ),
-                            style: const TextStyle(
-                              fontSize: 14,
-                              color: Colors.black,
-                            ),
-                            items: _baudRates.map((rate) {
-                              return DropdownMenuItem(
-                                value: rate,
-                                child: Text(
-                                  rate.toString(),
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    color: Colors.black,
-                                  ),
-                                ),
-                              );
-                            }).toList(),
-                            onChanged: widget.serialService.isOpen
-                                ? null
-                                : (value) {
-                                    if (value != null) {
-                                      setState(() {
-                                        _baudRate = value;
-                                      });
-                                    }
-                                  },
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    isSmallScreen
-                        ? Column(
-                            children: [
-                              Row(
-                                children: [
-                                  SizedBox(
-                                    height: 24,
-                                    child: Row(
-                                      children: [
-                                        Checkbox(
-                                          value: _rtsEnabled,
-                                          onChanged: widget.serialService.isOpen
-                                              ? null
-                                              : (value) {
-                                                  setState(() {
-                                                    _rtsEnabled =
-                                                        value ?? false;
-                                                  });
-                                                },
-                                        ),
-                                        const Text(
-                                          "RTS",
-                                          style: TextStyle(fontSize: 12),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  SizedBox(
-                                    height: 24,
-                                    child: Row(
-                                      children: [
-                                        Checkbox(
-                                          value: _dtrEnabled,
-                                          onChanged: widget.serialService.isOpen
-                                              ? null
-                                              : (value) {
-                                                  setState(() {
-                                                    _dtrEnabled =
-                                                        value ?? false;
-                                                  });
-                                                },
-                                        ),
-                                        const Text(
-                                          "DTR",
-                                          style: TextStyle(fontSize: 12),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  SizedBox(
-                                    height: 24,
-                                    child: Row(
-                                      children: [
-                                        Checkbox(
-                                          value: _hexDisplayMode,
-                                          onChanged: (value) {
-                                            setState(() {
-                                              _hexDisplayMode = value ?? false;
-                                              if (!_hexDisplayMode) {
-                                                _parseIMU = false;
-                                              }
-                                            });
-                                          },
-                                        ),
-                                        const Text(
-                                          "HEX",
-                                          style: TextStyle(fontSize: 12),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  if (_hexDisplayMode) ...[
-                                    const SizedBox(width: 8),
-                                    SizedBox(
-                                      height: 24,
-                                      child: Row(
-                                        children: [
-                                          Checkbox(
-                                            value: _parseIMU,
-                                            onChanged: (value) {
-                                              setState(() {
-                                                _parseIMU = value ?? false;
-                                              });
-                                            },
-                                          ),
-                                          const Text(
-                                            "解析IMU",
-                                            style: TextStyle(fontSize: 12),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                              const SizedBox(height: 4),
-                              SizedBox(
-                                width: double.infinity,
-                                height: 32,
-                                child: ElevatedButton.icon(
-                                  onPressed: _selectedPort == null
-                                      ? null
-                                      : () {
-                                          _togglePort();
-                                        },
-                                  icon: Icon(
-                                    widget.serialService.isOpen
-                                        ? Icons.link_off
-                                        : Icons.link,
-                                    size: 16,
-                                  ),
-                                  label: Text(
-                                    widget.serialService.isOpen
-                                        ? '关闭串口'
-                                        : '打开串口',
-                                    style: const TextStyle(fontSize: 13),
-                                  ),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: widget.serialService.isOpen
-                                        ? Colors.red
-                                        : Colors.blue,
-                                    foregroundColor: Colors.white,
-                                    padding: EdgeInsets.zero,
-                                  ),
-                                ),
-                              ),
-                            ],
                           )
-                        : Row(
-                            children: [
-                              Checkbox(
-                                value: _rtsEnabled,
-                                onChanged: widget.serialService.isOpen
-                                    ? null
-                                    : (value) {
-                                        setState(() {
-                                          _rtsEnabled = value ?? false;
-                                        });
-                                      },
-                              ),
-                              const Text("RTS"),
-                              const SizedBox(width: 10),
-                              Checkbox(
-                                value: _dtrEnabled,
-                                onChanged: widget.serialService.isOpen
-                                    ? null
-                                    : (value) {
-                                        setState(() {
-                                          _dtrEnabled = value ?? false;
-                                        });
-                                      },
-                              ),
-                              const Text("DTR"),
-                              const SizedBox(width: 10),
-                              Checkbox(
-                                value: _hexDisplayMode,
-                                onChanged: (value) {
-                                  setState(() {
-                                    _hexDisplayMode = value ?? false;
-                                    if (!_hexDisplayMode) _parseIMU = false;
-                                  });
-                                },
-                              ),
-                              const Text("HEX"),
-                              if (_hexDisplayMode) ...[
-                                const SizedBox(width: 10),
-                                Checkbox(
-                                  value: _parseIMU,
-                                  onChanged: (value) {
-                                    setState(() {
-                                      _parseIMU = value ?? false;
-                                    });
-                                  },
-                                ),
-                                const Text("解析IMU"),
-                              ],
-                              const Spacer(),
-                              ElevatedButton.icon(
-                                onPressed: _selectedPort == null
-                                    ? null
-                                    : () {
-                                        _togglePort();
-                                      },
-                                icon: Icon(
-                                  widget.serialService.isOpen
-                                      ? Icons.link_off
-                                      : Icons.link,
-                                ),
-                                label: Text(
-                                  widget.serialService.isOpen ? '关闭串口' : '打开串口',
-                                ),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: widget.serialService.isOpen
-                                      ? Colors.red
-                                      : Colors.blue,
-                                  foregroundColor: Colors.white,
-                                ),
-                              ),
-                            ],
-                          ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 4),
-            // Panel 2: Send Area
-            Card(
-              elevation: 2,
-              child: Padding(
-                padding: const EdgeInsets.all(4.0),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _sendController,
-                            style: const TextStyle(fontSize: 14),
-                            decoration: const InputDecoration(
-                              hintText: '输入要发送的内容...',
-                              isDense: true,
-                              border: OutlineInputBorder(),
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 8,
-                              ),
-                            ),
-                            onSubmitted: (_) => _sendData(),
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                        IconButton(
-                          onPressed: _sendData,
-                          icon: const Icon(Icons.send),
-                          color: Colors.blue,
-                          iconSize: 24,
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
-                        ),
-                      ],
+                          .toList(),
+                      onChanged: widget.serialService.isOpen
+                          ? null
+                          : (v) => setState(() => _selectedPort = v),
                     ),
-                    Row(
-                      children: [
-                        SizedBox(
-                          height: 24,
-                          child: Row(
-                            children: [
-                              Checkbox(
-                                value: _addCRLF,
-                                onChanged: (value) {
-                                  setState(() {
-                                    _addCRLF = value ?? false;
-                                  });
-                                },
-                              ),
-                              const Text(
-                                "自动添加 \\r\\n",
-                                style: TextStyle(fontSize: 12),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const Spacer(),
-                        SizedBox(
-                          height: 28,
-                          child: ElevatedButton.icon(
-                            onPressed: widget.globalSaving
-                                ? null
-                                : _toggleSaveToFile,
-                            icon: Icon(
-                              _isSavingToFile ? Icons.stop : Icons.save_alt,
-                              size: 14,
-                            ),
-                            label: Text(
-                              widget.globalSaving
-                                  ? "一键保存中"
-                                  : (_isSavingToFile ? "停止保存" : "保存到文件"),
-                              style: const TextStyle(fontSize: 12),
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: _isSavingToFile
-                                  ? Colors.red
-                                  : Colors.green,
-                              disabledBackgroundColor: Colors.grey,
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
+                  ),
+                  IconButton(
+                    onPressed: _refreshPorts,
+                    icon: const Icon(Icons.refresh),
+                    tooltip: '刷新串口列表',
+                  ),
+                ],
               ),
-            ),
-          ],
+              const SizedBox(height: 12),
+              DropdownButtonFormField<int>(
+                initialValue: _baudRate,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: '波特率'),
+                items: _baudRates
+                    .map(
+                      (rate) =>
+                          DropdownMenuItem(value: rate, child: Text('$rate')),
+                    )
+                    .toList(),
+                onChanged: widget.serialService.isOpen
+                    ? null
+                    : (v) {
+                        if (v != null) setState(() => _baudRate = v);
+                      },
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  FilterChip(
+                    label: const Text('RTS'),
+                    selected: _rtsEnabled,
+                    onSelected: widget.serialService.isOpen
+                        ? null
+                        : (v) => setState(() => _rtsEnabled = v),
+                  ),
+                  FilterChip(
+                    label: const Text('DTR'),
+                    selected: _dtrEnabled,
+                    onSelected: widget.serialService.isOpen
+                        ? null
+                        : (v) => setState(() => _dtrEnabled = v),
+                  ),
+                  FilterChip(
+                    label: const Text('HEX'),
+                    selected: _hexDisplayMode,
+                    onSelected: (v) => setState(() {
+                      _hexDisplayMode = v;
+                      if (!v) _parseIMU = false;
+                    }),
+                  ),
+                  if (_hexDisplayMode)
+                    FilterChip(
+                      label: const Text('解析IMU'),
+                      selected: _parseIMU,
+                      onSelected: (v) => setState(() => _parseIMU = v),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: _selectedPort == null ? null : _togglePort,
+                icon: Icon(
+                  widget.serialService.isOpen ? Icons.link_off : Icons.link,
+                ),
+                label: Text(widget.serialService.isOpen ? '关闭串口' : '打开串口'),
+              ),
+            ],
+          ),
         ),
-      ),
-    );
-  }
+        const SizedBox(height: 16),
+        AppSectionCard(
+          title: '发送与保存',
+          icon: Icons.send_outlined,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextField(
+                controller: _sendController,
+                decoration: const InputDecoration(
+                  labelText: '发送内容',
+                  hintText: '输入要发送的内容…',
+                ),
+                onSubmitted: (_) => _sendData(),
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  FilterChip(
+                    label: const Text(r'自动添加 \r\n'),
+                    selected: _addCRLF,
+                    onSelected: (v) => setState(() => _addCRLF = v),
+                  ),
+                  FilledButton.icon(
+                    onPressed: _sendData,
+                    icon: const Icon(Icons.send_outlined),
+                    label: const Text('发送'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: widget.globalSaving ? null : _toggleSaveToFile,
+                icon: Icon(_isSavingToFile ? Icons.stop : Icons.save_alt),
+                label: Text(
+                  widget.globalSaving
+                      ? '一键保存中'
+                      : (_isSavingToFile ? '停止保存' : '保存到文件'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
-    super.build(context); // Required for AutomaticKeepAliveClientMixin
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        // Check if the screen is very narrow
-        bool isNarrow = constraints.maxWidth < 400;
-
-        return Column(
-          children: [
-            // Upper part: Received Data
-            Expanded(flex: 2, child: _buildLogArea()),
-            // Lower part: Dashboard / Configuration
-            Expanded(flex: 1, child: _buildControlsArea(isNarrow)),
-          ],
-        );
-      },
+    super.build(context);
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final wide =
+              constraints.maxWidth >= 880 &&
+              MediaQuery.textScalerOf(context).scale(14) <= 21;
+          if (wide) {
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(child: _buildLogArea()),
+                const SizedBox(width: 16),
+                SizedBox(width: 360, child: _buildControlsArea()),
+              ],
+            );
+          }
+          return Column(
+            children: [
+              Expanded(child: _buildLogArea()),
+              const SizedBox(height: 12),
+              Expanded(child: _buildControlsArea()),
+            ],
+          );
+        },
+      ),
     );
   }
 }

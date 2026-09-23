@@ -67,6 +67,20 @@ void main() {
     });
   }
 
+  testWidgets('native paired IMU exports a single complete CSV row', (
+    tester,
+  ) async {
+    input.writeAsBytesSync(
+      File('test/fixtures/phone_imu_paired.bin').readAsBytesSync(),
+    );
+    final rows = await _decode(tester, input, navigationOnly: false);
+    expect(rows, hasLength(2));
+    final values = rows.last.split(',');
+    expect(values.take(2), ['2400', '123456.123456789']);
+    expect(double.parse(values[2]), closeTo(180, .00001));
+    expect(values.skip(3).map(double.parse), [0, 0, 1, 0, -1]);
+  });
+
   testWidgets('navigation export keeps separate and combined results', (
     tester,
   ) async {

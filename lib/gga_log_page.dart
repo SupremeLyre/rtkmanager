@@ -5,7 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
 import 'gga_log_service.dart';
-import 'mobile_ui.dart';
+import 'app_ui.dart';
 
 class GgaLogPage extends StatefulWidget {
   const GgaLogPage({
@@ -109,20 +109,9 @@ class _GgaLogPageState extends State<GgaLogPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      toolbarHeight: 56,
-      leading: IconButton(
-        tooltip: '打开导航',
-        icon: const Icon(Icons.menu),
-        onPressed: widget.onOpenDrawer,
-      ),
-      title: const FittedBox(
-        fit: BoxFit.scaleDown,
-        child: Text(
-          '日志存储',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-        ),
-      ),
+    appBar: AppPageBar(
+      title: '日志存储',
+      onOpenDrawer: widget.onOpenDrawer,
       actions: [
         IconButton(
           tooltip: '刷新日志',

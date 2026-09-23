@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'serial_service.dart';
 import 'satellite_info.dart';
+import 'app_ui.dart';
 
 class SatellitePage extends StatefulWidget {
   final VoidCallback onOpenDrawer;
@@ -49,34 +50,24 @@ class _SatellitePageState extends State<SatellitePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          '卫星信息',
-          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-        ),
-        leading: IconButton(
-          icon: const Icon(Icons.menu),
-          onPressed: widget.onOpenDrawer,
-        ),
-      ),
+      appBar: AppPageBar(title: '卫星信息', onOpenDrawer: widget.onOpenDrawer),
       body: ListenableBuilder(
         listenable: _satelliteService,
         builder: (context, _) {
           return SingleChildScrollView(
-            child: Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Column(
-                children: [
-                  // 统计信息
-                  _buildStatisticsCard(),
-                  const SizedBox(height: 12),
-                  // 条形统计图 (信噪比)
-                  _buildSnrBarChart(),
-                  const SizedBox(height: 12),
-                  // 极坐标图 (卫星高度角和方位角)
-                  _buildPolarPlot(),
-                ],
-              ),
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildStatisticsCard(),
+                const SizedBox(height: 16),
+                AppColumns(
+                  primaryFlex: 3,
+                  secondaryFlex: 2,
+                  primary: _buildSnrBarChart(),
+                  secondary: _buildPolarPlot(),
+                ),
+              ],
             ),
           );
         },
@@ -95,90 +86,103 @@ class _SatellitePageState extends State<SatellitePage> {
     final navicCount = satellites[SatelliteSystem.navic]?.length ?? 0;
     final totalCount = _satelliteService.totalVisibleSatellites;
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: Column(
-          children: [
-            const Text(
-              '可见卫星统计',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              alignment: WrapAlignment.spaceAround,
-              spacing: 16.0,
-              runSpacing: 8.0,
-              children: [
-                _buildStatItem('GPS', gpsCount, Colors.blue),
-                _buildStatItem('GLONASS', glonassCount, Colors.red),
-                _buildStatItem('Galileo', galileoCount, Colors.green),
-                _buildStatItem('BeiDou', beidouCount, Colors.orange),
-                _buildStatItem('QZSS', qzssCount, Colors.purple),
-                _buildStatItem('NavIC', navicCount, Colors.teal),
-                _buildStatItem('总计', totalCount, Colors.grey),
-              ],
-            ),
-            if (_satelliteService.lastUpdate != null)
-              Text(
-                '最后更新: ${_satelliteService.lastUpdate!.toString().split('.')[0]}',
-                style: const TextStyle(fontSize: 12, color: Colors.grey),
+    return AppSectionCard(
+      title: '可见卫星统计',
+      icon: Icons.satellite_alt_outlined,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              _buildStatItem(
+                '总计',
+                totalCount,
+                Theme.of(context).colorScheme.primary,
               ),
-          ],
-        ),
+              _buildStatItem('GPS', gpsCount, Colors.blue),
+              _buildStatItem('GLONASS', glonassCount, Colors.red),
+              _buildStatItem('Galileo', galileoCount, Colors.green),
+              _buildStatItem('BeiDou', beidouCount, Colors.orange),
+              _buildStatItem('QZSS', qzssCount, Colors.purple),
+              _buildStatItem('NavIC', navicCount, Colors.teal),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            _satelliteService.lastUpdate == null
+                ? '连接主串口后显示卫星信号与分布。'
+                : '最后更新: ${_satelliteService.lastUpdate!.toString().split('.')[0]}',
+            style: TextStyle(
+              fontSize: 12,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildStatItem(String label, int count, Color color) {
-    return Column(
+  Widget _buildStatItem(String label, int count, Color color) => Container(
+    constraints: const BoxConstraints(minWidth: 96),
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+    decoration: BoxDecoration(
+      color: color.withValues(alpha: .08),
+      borderRadius: BorderRadius.circular(12),
+    ),
+    child: Column(
       children: [
         Text(
-          count.toString(),
+          '$count',
           style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-            color: color,
+            fontSize: 24,
+            fontWeight: FontWeight.w700,
+            color: Theme.of(context).colorScheme.onSurface,
           ),
         ),
-        Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
       ],
-    );
-  }
+    ),
+  );
 
-  /// 构建极坐标图 (显示卫星的高度角和方位角)
-  Widget _buildPolarPlot() {
-    final satellites = _satelliteService.satellites;
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              '卫星分布 (高度角/方位角)',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Center(
+  Widget _buildPolarPlot() => AppSectionCard(
+    title: '卫星分布 (高度角/方位角)',
+    icon: Icons.explore_outlined,
+    child: Column(
+      children: [
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final side = min(350.0, constraints.maxWidth);
+            return Center(
               child: SizedBox(
-                width: 350,
-                height: 350,
+                width: side,
+                height: side,
                 child: CustomPaint(
                   painter: PolarPlotPainter(
-                    allSatellites: _mergeSatellites(satellites),
+                    allSatellites: _mergeSatellites(
+                      _satelliteService.satellites,
+                    ),
+                    colors: Theme.of(context).colorScheme,
+                    textStyle: Theme.of(context).textTheme.bodySmall!,
                   ),
                 ),
               ),
-            ),
-            const SizedBox(height: 12),
-            _buildPolarLegend(),
-          ],
+            );
+          },
         ),
-      ),
-    );
-  }
+        const SizedBox(height: 16),
+        _buildPolarLegend(),
+      ],
+    ),
+  );
 
   Widget _buildPolarLegend() {
     return Center(
@@ -229,26 +233,17 @@ class _SatellitePageState extends State<SatellitePage> {
   }
 
   /// 构建条形统计图 (信噪比)
-  Widget _buildSnrBarChart() {
-    final satellites = _satelliteService.satellites;
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              '信噪比分布 (按卫星系统)',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            _buildSystemSnrCharts(satellites),
-          ],
-        ),
-      ),
-    );
-  }
+  Widget _buildSnrBarChart() => AppSectionCard(
+    title: '信噪比分布 (按卫星系统)',
+    icon: Icons.bar_chart,
+    child: _satelliteService.totalVisibleSatellites == 0
+        ? const MobileEmptyState(
+            icon: Icons.satellite_alt_outlined,
+            title: '等待卫星信号',
+            message: '接收到设备的 GSV 数据后，在这里比较各卫星的信号强度。',
+          )
+        : _buildSystemSnrCharts(_satelliteService.satellites),
+  );
 
   Widget _buildSystemSnrCharts(
     Map<SatelliteSystem, List<SatelliteInfo>> satellites,
@@ -308,16 +303,21 @@ class _SatellitePageState extends State<SatellitePage> {
               ),
             ),
             const SizedBox(height: 4),
-            SizedBox(
-              height: 100,
-              child: CustomPaint(
-                painter: SnrBarChartPainter(
-                  satellites: satList,
-                  color: color,
-                  minId: minId,
-                  maxId: maxId,
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 8, 0, 18),
+              child: SizedBox(
+                height: 100,
+                child: CustomPaint(
+                  painter: SnrBarChartPainter(
+                    colors: Theme.of(context).colorScheme,
+                    textStyle: Theme.of(context).textTheme.bodySmall!,
+                    satellites: satList,
+                    color: color,
+                    minId: minId,
+                    maxId: maxId,
+                  ),
+                  size: Size.infinite,
                 ),
-                size: Size.infinite,
               ),
             ),
             const SizedBox(height: 12),
@@ -352,12 +352,18 @@ class PolarPlotPainter extends CustomPainter {
     SatelliteSystem.unknown: Colors.grey,
   };
 
-  PolarPlotPainter({required this.allSatellites});
+  final ColorScheme colors;
+  final TextStyle textStyle;
+  PolarPlotPainter({
+    required this.allSatellites,
+    required this.colors,
+    required this.textStyle,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
-    final radius = min(size.width, size.height) / 2 - 20;
+    final radius = min(size.width, size.height) / 2 - 32;
 
     // 绘制背景和网格
     _drawBackground(canvas, center, radius, size);
@@ -372,13 +378,14 @@ class PolarPlotPainter extends CustomPainter {
       center,
       radius,
       Paint()
-        ..color = Colors.grey[100]!
+        ..color = colors.surfaceContainerLow
         ..style = PaintingStyle.fill,
     );
 
     // 绘制网格线 (高度角)
     final gridPaint = Paint()
-      ..color = Colors.grey[300]!
+      ..style = PaintingStyle.stroke
+      ..color = colors.outlineVariant
       ..strokeWidth = 0.5;
 
     for (int el = 10; el <= 90; el += 20) {
@@ -388,7 +395,7 @@ class PolarPlotPainter extends CustomPainter {
 
     // 绘制方位角线
     final anglePaint = Paint()
-      ..color = Colors.grey[400]!
+      ..color = colors.outline
       ..strokeWidth = 0.5;
 
     for (int az = 0; az < 360; az += 30) {
@@ -415,7 +422,7 @@ class PolarPlotPainter extends CustomPainter {
 
       textPainter.text = TextSpan(
         text: labels[i],
-        style: const TextStyle(color: Colors.black54, fontSize: 11),
+        style: textStyle.copyWith(color: colors.onSurfaceVariant, fontSize: 11),
       );
       textPainter.layout();
       textPainter.paint(
@@ -432,7 +439,7 @@ class PolarPlotPainter extends CustomPainter {
 
       textPainter.text = TextSpan(
         text: elLabels[i],
-        style: const TextStyle(color: Colors.black38, fontSize: 9),
+        style: textStyle.copyWith(color: colors.onSurfaceVariant, fontSize: 9),
       );
       textPainter.layout();
       textPainter.paint(
@@ -464,7 +471,7 @@ class PolarPlotPainter extends CustomPainter {
       // 绘制卫星号标签
       textPainter.text = TextSpan(
         text: sat.satelliteId.toString().padLeft(2, '0'),
-        style: const TextStyle(color: Colors.black87, fontSize: 9),
+        style: textStyle.copyWith(color: colors.onSurfaceVariant, fontSize: 9),
       );
       textPainter.layout();
       textPainter.paint(
@@ -476,7 +483,9 @@ class PolarPlotPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(PolarPlotPainter oldDelegate) {
-    return oldDelegate.allSatellites != allSatellites;
+    return oldDelegate.allSatellites != allSatellites ||
+        oldDelegate.textStyle != textStyle ||
+        oldDelegate.colors != colors;
   }
 }
 
@@ -487,7 +496,11 @@ class SnrBarChartPainter extends CustomPainter {
   final int minId;
   final int maxId;
 
+  final ColorScheme colors;
+  final TextStyle textStyle;
   SnrBarChartPainter({
+    required this.colors,
+    required this.textStyle,
     required this.satellites,
     required this.color,
     required this.minId,
@@ -502,7 +515,8 @@ class SnrBarChartPainter extends CustomPainter {
       ..style = PaintingStyle.fill;
 
     final gridPaint = Paint()
-      ..color = Colors.grey[300]!
+      ..style = PaintingStyle.stroke
+      ..color = colors.outlineVariant
       ..strokeWidth = 0.5;
 
     final textPainter = TextPainter(textDirection: TextDirection.ltr);
@@ -515,7 +529,7 @@ class SnrBarChartPainter extends CustomPainter {
       // 标签
       textPainter.text = TextSpan(
         text: snr.toString(),
-        style: const TextStyle(color: Colors.grey, fontSize: 8),
+        style: textStyle.copyWith(color: colors.onSurfaceVariant, fontSize: 8),
       );
       textPainter.layout();
       textPainter.paint(canvas, Offset(-20, y - textPainter.height / 2));
@@ -548,7 +562,10 @@ class SnrBarChartPainter extends CustomPainter {
       if (showLabel) {
         textPainter.text = TextSpan(
           text: currentId.toString(),
-          style: const TextStyle(color: Colors.black54, fontSize: 8),
+          style: textStyle.copyWith(
+            color: colors.onSurfaceVariant,
+            fontSize: 8,
+          ),
         );
         textPainter.layout();
         textPainter.paint(
@@ -578,7 +595,9 @@ class SnrBarChartPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(SnrBarChartPainter oldDelegate) {
-    return oldDelegate.satellites != satellites ||
+    return oldDelegate.colors != colors ||
+        oldDelegate.textStyle != textStyle ||
+        oldDelegate.satellites != satellites ||
         oldDelegate.color != color ||
         oldDelegate.minId != minId ||
         oldDelegate.maxId != maxId;

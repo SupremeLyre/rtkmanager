@@ -14,19 +14,27 @@ object CaptureFormats {
     const val C = 299792458.0
     const val GPS_EPOCH_MS = 315964800000L
 
-    fun sensorFrame(tid: Int, gpsNs: Long, leap: Int, id: Int, values: FloatArray): ByteArray {
-        require(id in listOf(0x10, 0x20, 0x30) && values.size >= 3)
-        val scale = when (id) { 0x10 -> 1e6 / 9.80665; 0x20 -> 1e6 * 180 / PI; else -> 1e3 }
+    fun sensorFrame(tid: Int, gpsNs: Long, leap: Int, id: Int, values: FloatArray): ByteArray =
+        sensorFrame(tid, gpsNs, leap, listOf(id to values))
+
+    fun imuFrame(tid: Int, gpsNs: Long, leap: Int, accel: FloatArray, gyro: FloatArray): ByteArray =
+        sensorFrame(tid, gpsNs, leap, listOf(0x10 to accel, 0x20 to gyro))
+
+    private fun sensorFrame(tid: Int, gpsNs: Long, leap: Int, vectors: List<Pair<Int, FloatArray>>): ByteArray {
         val utcNs = gpsNs - leap * 1000000000L
         val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
         cal.timeInMillis = GPS_EPOCH_MS + Math.floorDiv(utcNs, 1000000)
         val us = Math.floorMod(utcNs, 1000000000) / 1000
-        val payload = ByteBuffer.allocate(45).order(ByteOrder.LITTLE_ENDIAN)
-        payload.put(id.toByte()).put(12)
-        for (v in values.take(3)) {
-            val scaled = v * scale
-            require(scaled.isFinite() && scaled in Int.MIN_VALUE.toDouble()..Int.MAX_VALUE.toDouble())
-            payload.putInt(scaled.roundToInt())
+        val payload = ByteBuffer.allocate(31 + 14 * vectors.size).order(ByteOrder.LITTLE_ENDIAN)
+        for ((id, values) in vectors) {
+            require(id in listOf(0x10, 0x20, 0x30) && values.size >= 3)
+            val scale = when (id) { 0x10 -> 1e6 / 9.80665; 0x20 -> 1e6 * 180 / PI; else -> 1e3 }
+            payload.put(id.toByte()).put(12)
+            for (v in values.take(3)) {
+                val scaled = v * scale
+                require(scaled.isFinite() && scaled in Int.MIN_VALUE.toDouble()..Int.MAX_VALUE.toDouble())
+                payload.putInt(scaled.roundToInt())
+            }
         }
         payload.put(0x50).put(11).putInt((us / 1000).toInt())
             .putShort((cal.get(Calendar.YEAR) - 2000).toShort())
@@ -36,10 +44,10 @@ object CaptureFormats {
         payload.put(0x51).put(4).putInt(us.toInt())
         // Free TLV 0x52: GPS week + nanoseconds of week, authoritative time.
         payload.put(0x52).put(10).putShort((gpsNs / WEEK_NS).toShort()).putLong(gpsNs % WEEK_NS)
-        val frame = ByteBuffer.allocate(52).order(ByteOrder.LITTLE_ENDIAN)
-        frame.put(0x59).put(0x53).putShort(tid.toShort()).put(45).put(payload.array())
+        val frame = ByteBuffer.allocate(payload.capacity() + 7).order(ByteOrder.LITTLE_ENDIAN)
+        frame.put(0x59).put(0x53).putShort(tid.toShort()).put(payload.capacity().toByte()).put(payload.array())
         var a = 0; var b = 0
-        for (i in 2 until 50) { a = (a + (frame.array()[i].toInt() and 255)) and 255; b = (b + a) and 255 }
+        for (i in 2 until frame.capacity() - 2) { a = (a + (frame.array()[i].toInt() and 255)) and 255; b = (b + a) and 255 }
         frame.put(a.toByte()).put(b.toByte())
         return frame.array()
     }
@@ -79,7 +87,9 @@ object PhoneGnssMath {
             near(1561.098) -> "2"; near(1268.52) -> "6"; near(2492.028) -> "9"
             else -> return null
         }
-        // Unknown code types are not guessed; they remain in the raw CSV.
+        // Compatibility: treat BDS B2a Q as pilot P; retain the reported Q in raw CSV.
+        val mappedCode = if (system == 5 && band == "5" && code == "Q") "P" else code
+        // All other unknown code types remain unsupported and are kept in raw CSV.
         val map = when (system) {
             1 -> mapOf("1C" to 2, "1P" to 3, "1W" to 4, "2C" to 8, "2P" to 9, "2W" to 10,
                 "2S" to 15, "2L" to 16, "2X" to 17, "5I" to 22, "5Q" to 23, "5X" to 24,
@@ -98,7 +108,7 @@ object PhoneGnssMath {
             7 -> mapOf("5A" to 22, "9A" to 8)
             else -> return null
         }
-        return map[band + code]
+        return map[band + mappedCode]
     }
 
     fun pseudorange(gpsNs: Long, offsetNs: Double, svNs: Long, system: Int, state: Int, leap: Int): Double? {

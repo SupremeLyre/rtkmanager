@@ -165,6 +165,74 @@ void main() {
     });
 
     test(
+      'default filter keeps named receivers, search also finds unnamed addresses',
+      () {
+        for (final (id, name) in [
+          ('AA:BB:CC:00:00:01', '  Survey Rover  '),
+          ('AA:BB:CC:00:00:02', '未命名设备'),
+          ('AA:BB:CC:00:00:03', '   '),
+          ('AA:BB:CC:00:00:04', 'Custom Receiver'),
+        ]) {
+          events.add({'type': 'device', 'id': id, 'name': name, 'rssi': -95});
+        }
+        expect(service.filteredDevices().map((device) => device.name), [
+          'Survey Rover',
+          'Custom Receiver',
+        ]);
+        expect(service.filteredDevices(includeUnnamed: true), hasLength(4));
+        expect(
+          service.filteredDevices(query: '  survey ROV  ').single.id,
+          'AA:BB:CC:00:00:01',
+        );
+        expect(
+          service.filteredDevices(query: 'aabbcc000002').single.name,
+          '未命名设备',
+        );
+        expect(
+          service.filteredDevices(query: 'AA-BB-CC-00-00-03').single.name,
+          '未命名设备',
+        );
+        expect(service.filteredDevices(query: 'missing'), isEmpty);
+        expect(service.filteredDevices(query: ' : - '), isEmpty);
+        expect(service.filteredDevices(query: '  '), hasLength(2));
+        expect(
+          service.devices,
+          hasLength(4),
+          reason: 'Filtering never discards raw discoveries',
+        );
+      },
+    );
+
+    test(
+      'missing names in later advertisements do not hide a known receiver',
+      () async {
+        void advertise(String name, int rssi) => events.add({
+          'type': 'device',
+          'id': 'receiver',
+          'name': name,
+          'rssi': rssi,
+        });
+        advertise('未命名设备', -60);
+        expect(service.filteredDevices(), isEmpty);
+        advertise('BlueNRG', -55);
+        expect(service.filteredDevices().single.name, 'BlueNRG');
+        advertise('未命名设备', -65);
+        advertise('', -70);
+        expect(service.filteredDevices().single.name, 'BlueNRG');
+        expect(service.filteredDevices().single.rssi, -70);
+        advertise('Renamed Receiver', -50);
+        expect(service.filteredDevices().single.name, 'Renamed Receiver');
+        await service.startScan();
+        advertise('未命名设备', -80);
+        expect(
+          service.filteredDevices(),
+          isEmpty,
+          reason: 'Name retention only lasts for this scan',
+        );
+      },
+    );
+
+    test(
       'subscribed GGA only, disconnect stops reception and reconnect resets counts',
       () async {
         final received = <String>[];

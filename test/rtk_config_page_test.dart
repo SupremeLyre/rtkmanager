@@ -34,12 +34,14 @@ void main() {
     await tester.tap(find.byIcon(Icons.menu));
     expect(drawerOpened, isTrue);
 
+    await tester.ensureVisible(find.byTooltip('刷新串口列表'));
     await tester.tap(find.byTooltip('刷新串口列表'));
     await tester.pumpAndSettle();
     expect(scans, 2);
     expect(tester.takeException(), isNull);
     expect(find.text('NTRIP 连接配置'), findsOneWidget);
 
+    await tester.ensureVisible(find.text('添加输出串口'));
     await tester.tap(find.text('添加输出串口'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
@@ -63,8 +65,10 @@ void main() {
     );
     await tester.pumpAndSettle();
     denyAccess = false;
+    await tester.ensureVisible(find.byTooltip('刷新串口列表'));
     await tester.tap(find.byTooltip('刷新串口列表'));
     await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('主串口'));
     await tester.tap(find.text('主串口'));
     await tester.pumpAndSettle();
 
