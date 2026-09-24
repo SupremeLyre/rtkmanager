@@ -87,7 +87,7 @@ class _AndroidHomePageState extends State<AndroidHomePage>
             logs: _logs,
           ),
           MobilePositioningPage(
-            ggaOnly: true,
+            mobileLayout: true,
             bluetooth: _bluetooth,
             onOpenDrawer: _openDrawer,
             onImportingChanged: (value) {

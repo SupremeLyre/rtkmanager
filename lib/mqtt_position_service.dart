@@ -149,8 +149,6 @@ class MqttPositionService extends ChangeNotifier {
   int get cachedPoints => _totalPoints;
   int evictedPoints = 0;
   int evictedDevices = 0;
-  String get cacheDescription =>
-      '地图缓存：每台最多 $maxPointsPerDevice 点，总计最多 $maxTotalPoints 点，最多 $maxDevices 台最近活跃设备。旧轨迹移出内存，完整接收记录保存在本地日志中。';
   final MapLayerController layers = MapLayerController();
   final Map<String, MqttDeviceTrack> _tracks = {};
   Map<String, MqttDeviceTrack> get tracks => UnmodifiableMapView(_tracks);

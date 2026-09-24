@@ -5,7 +5,18 @@
 #include "flutter/generated_plugin_registrant.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
-    : project_(project) {}
+    : project_(project),
+      dpi_refresh_([this](UINT dpi) {
+        // Keep window_manager's cached ratio (e.g. minimum window size) in
+        // sync too, including when Windows omitted the top-level DPI message.
+        // Dispatch only to plugins; do not resize/reposition the outer window.
+        RECT bounds{};
+        if (dpi && flutter_controller_ && GetWindowRect(GetHandle(), &bounds)) {
+          flutter_controller_->HandleTopLevelWindowProc(
+              GetHandle(), WM_DPICHANGED, MAKELONG(dpi, dpi),
+              reinterpret_cast<LPARAM>(&bounds));
+        }
+      }) {}
 
 FlutterWindow::~FlutterWindow() {}
 
@@ -26,6 +37,8 @@ bool FlutterWindow::OnCreate() {
   }
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
+  dpi_refresh_.Start(GetHandle(),
+                     flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();
@@ -40,6 +53,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  dpi_refresh_.Stop();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
@@ -51,6 +65,10 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  if (dpi_refresh_.HandleMessage(message, wparam)) {
+    return 0;
+  }
+
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =

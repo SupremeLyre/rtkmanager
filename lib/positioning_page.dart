@@ -23,7 +23,7 @@ export 'position_data.dart';
 
 class MobilePositioningPage extends StatefulWidget {
   final VoidCallback? onOpenDrawer;
-  final bool ggaOnly;
+  final bool mobileLayout;
   final GnssBleService? bluetooth;
   final MqttPositionService? mqtt;
   final ValueChanged<bool>? onImportingChanged;
@@ -31,7 +31,7 @@ class MobilePositioningPage extends StatefulWidget {
   const MobilePositioningPage({
     super.key,
     this.onOpenDrawer,
-    this.ggaOnly = false,
+    this.mobileLayout = false,
     this.bluetooth,
     this.mqtt,
     this.onImportingChanged,
@@ -97,18 +97,12 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   void initState() {
     super.initState();
     _localLayers.ensureLayer('gga', label: 'GGA', color: Colors.green.shade800);
-    if (!widget.ggaOnly) {
-      _localLayers.ensureLayer(
-        'pppsol',
-        label: 'PPPSOL',
-        color: Colors.blue.shade900,
-      );
-      _localLayers.ensureLayer(
-        'imu',
-        label: 'IMU',
-        color: Colors.cyan.shade800,
-      );
-    }
+    _localLayers.ensureLayer(
+      'pppsol',
+      label: 'PPPSOL',
+      color: Colors.blue.shade900,
+    );
+    _localLayers.ensureLayer('imu', label: 'IMU', color: Colors.cyan.shade800);
     _localLayers.addListener(_handleLocalLayers);
     _mqtt.addListener(_handleMqttUpdate);
     _mqtt.layers.addListener(_handleMqttUpdate);
@@ -118,7 +112,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
       bluetooth.addListener(_handleBluetoothConnection);
     }
     // 安卓实时数据由蓝牙提供，不启动桌面串口的数据订阅。
-    if (widget.ggaOnly || Platform.isAndroid) return;
+    if (widget.mobileLayout || Platform.isAndroid) return;
 
     final serialService = SerialService();
     _subscription = serialService.lineStream.listen((line) {
@@ -252,8 +246,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     _localRevision.value++;
   }
 
-  PositionHistoryPoint? _parseNmeaLine(String line) =>
-      parsePositionLine(line, ggaOnly: widget.ggaOnly);
+  PositionHistoryPoint? _parseNmeaLine(String line) => parsePositionLine(line);
 
   bool _isLocalPointVisible(PositionHistoryPoint point) =>
       _localLayers.isVisible(point.type.name);
@@ -342,6 +335,21 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
       builder: (_) => MqttConnectionPanel(
         service: _mqtt,
         onReceive: () => _setMqttMode(true),
+        onOpenLogs: _showMqttLogs,
+      ),
+    );
+  }
+
+  void _showMqttLogs() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      constraints: const BoxConstraints(maxWidth: 600),
+      builder: (context) => SizedBox(
+        height: MediaQuery.sizeOf(context).height * .75,
+        child: MqttArchivePanel(archive: _mqtt.archive),
       ),
     );
   }
@@ -773,7 +781,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           _importProgress = 0.0;
         });
 
-        final parser = widget.ggaOnly ? null : ImuDataParser();
+        final parser = ImuDataParser();
         final nmeaParser = NmeaParser();
         List<PositionHistoryPoint> newPoints = [];
         int? lastSec;
@@ -785,7 +793,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         // Parse chunk by chunk to avoid out of memory and UI freeze
         await for (final chunk in file.openRead()) {
           processedBytes += chunk.length;
-          parser?.parseData(chunk, (data) {
+          parser.parseData(chunk, (data) {
             if (data.utcYear != null &&
                 data.utcYear! > 2000 &&
                 data.utcSec != null &&
@@ -810,8 +818,6 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                   imuData: data,
                 );
 
-                newPoints.add(point);
-
                 if (!firstPointFound) {
                   firstPointFound = true;
                   // Immediately add first point and center map
@@ -826,6 +832,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                       _currentImuInfo = data;
                     });
                   }
+                } else {
+                  newPoints.add(point);
                 }
               }
             }
@@ -952,7 +960,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   List<Widget> _mobileMapActions() => [
     IconButton(
       icon: const Icon(Icons.file_open),
-      tooltip: widget.ggaOnly ? '导入 GGA 文件' : '从文件导入IMU定位数据',
+      tooltip: widget.mobileLayout ? '导入定位文件' : '从文件导入IMU定位数据',
       onPressed: _isImporting || widget.bluetooth?.isActive == true
           ? null
           : _importFile,
@@ -989,17 +997,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         if (value == 'settings') {
           _showMqttSettings();
         } else if (value == 'logs') {
-          showModalBottomSheet<void>(
-            context: context,
-            isScrollControlled: true,
-            useSafeArea: true,
-            showDragHandle: true,
-            constraints: const BoxConstraints(maxWidth: 600),
-            builder: (context) => SizedBox(
-              height: MediaQuery.sizeOf(context).height * .75,
-              child: MqttArchivePanel(archive: _mqtt.archive),
-            ),
-          );
+          _showMqttLogs();
         } else {
           _setMqttMode(value == 'mqtt');
         }
@@ -1008,7 +1006,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         CheckedPopupMenuItem(
           value: 'local',
           checked: !_mqttMode,
-          child: Text(widget.ggaOnly ? '蓝牙 / 离线文件' : '串口 / 离线文件'),
+          child: Text(widget.mobileLayout ? '蓝牙 / 离线文件' : '串口 / 离线文件'),
         ),
         CheckedPopupMenuItem(
           value: 'mqtt',
@@ -1029,6 +1027,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
 
   Widget _positionSummary() {
     final info = _currentInfo;
+    final imu = _currentImuInfo;
+    final hasPosition = info != null || imu != null;
     final colors = Theme.of(context).colorScheme;
     final compact =
         MediaQuery.sizeOf(context).height < 500 ||
@@ -1076,7 +1076,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                       children: [
                         ExcludeSemantics(
                           child: Icon(
-                            info == null
+                            !hasPosition
                                 ? Icons.location_searching
                                 : Icons.gps_fixed,
                             size: 18,
@@ -1086,7 +1086,13 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                         const SizedBox(width: 4),
                         Expanded(
                           child: Text(
-                            info == null
+                            imu != null
+                                ? _getStatusText(
+                                    _getEffectiveImuStatus(imu),
+                                    true,
+                                    pointType: PointType.imu,
+                                  )
+                                : info == null
                                 ? (_mqttMode ? '暂无可见设备位置' : '等待定位数据')
                                 : _getStatusText(
                                     info.status,
@@ -1105,11 +1111,13 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      info == null
+                      imu != null
+                          ? 'IMU UTC: ${_imuTime(imu)}'
+                          : info == null
                           ? (_mqttMode
                                 ? '通过数据来源连接，通过图层选择设备'
-                                : widget.ggaOnly
-                                ? '连接设备或导入 GGA 文件'
+                                : widget.mobileLayout
+                                ? '连接设备或导入定位文件'
                                 : '连接主串口或导入定位文件')
                           : '${info.type == PointType.pppsol ? 'PPP' : 'GGA'} UTC: ${info.utcTime}',
                       style: TextStyle(
@@ -1118,7 +1126,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                         color: colors.onSurfaceVariant,
                       ),
                     ),
-                    if (info != null && !compact) ...[
+                    if (hasPosition && !compact) ...[
                       Divider(
                         height: 6,
                         thickness: 1,
@@ -1128,29 +1136,43 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                         spacing: 8,
                         runSpacing: 4,
                         children: [
-                          _mapReading(
-                            Icons.satellite_alt,
-                            '${info.satellites}',
-                            '卫星',
-                          ),
-                          _mapReading(
-                            Icons.track_changes,
-                            info.dop1.toStringAsFixed(2),
-                            info.type == PointType.pppsol ? 'DOP 1' : 'HDOP',
-                            showLabel: true,
-                          ),
-                          _mapReading(
-                            Icons.height,
-                            '${info.altitude.toStringAsFixed(1)} m',
-                            '海拔',
-                          ),
+                          if (info != null) ...[
+                            _mapReading(
+                              Icons.satellite_alt,
+                              '${info.satellites}',
+                              '卫星',
+                            ),
+                            _mapReading(
+                              Icons.track_changes,
+                              info.dop1.toStringAsFixed(2),
+                              info.type == PointType.pppsol ? 'DOP 1' : 'HDOP',
+                              showLabel: true,
+                            ),
+                            _mapReading(
+                              Icons.height,
+                              '${info.altitude.toStringAsFixed(1)} m',
+                              '海拔',
+                            ),
+                          ],
+                          if (imu != null) ...[
+                            _mapReading(
+                              Icons.height,
+                              '${imu.alt?.toStringAsFixed(1) ?? '--'} m',
+                              '海拔',
+                            ),
+                            _mapReading(
+                              Icons.speed_outlined,
+                              '${_imuSpeed(imu).toStringAsFixed(3)} m/s',
+                              '速度',
+                            ),
+                          ],
                         ],
                       ),
                     ],
                   ],
                 ),
               ),
-              if (info != null)
+              if (hasPosition)
                 IconButton(
                   onPressed: _showPositionDetails,
                   tooltip: '查看定位详情',
@@ -1210,10 +1232,20 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     ),
   );
 
+  String _imuTime(ImuData imu) =>
+      '${imu.utcHour?.toString().padLeft(2, '0')}:${imu.utcMin?.toString().padLeft(2, '0')}:${imu.utcSec?.toString().padLeft(2, '0')}.${imu.utcFractionText}';
+
+  double _imuSpeed(ImuData imu) => sqrt(
+    (imu.ve ?? 0) * (imu.ve ?? 0) +
+        (imu.vn ?? 0) * (imu.vn ?? 0) +
+        (imu.vu ?? 0) * (imu.vu ?? 0),
+  );
+
   void _showPositionDetails() {
     final info = _currentInfo;
+    final imu = _currentImuInfo;
     final mqttFix = _mqttMode ? _mqttShownFix : null;
-    if (info == null) return;
+    if (info == null && imu == null) return;
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -1257,68 +1289,132 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                 SelectableText(mqttFix.gga),
                 const SizedBox(height: 12),
               ],
-              Text(
-                '${info.type == PointType.pppsol ? 'PPP' : 'GGA'} UTC: ${info.utcTime}',
-              ),
-              const SizedBox(height: 16),
-              MobileStatusChip(
-                _getStatusText(info.status, false, pointType: info.type),
-                icon: Icons.gps_fixed,
-                emphasized: true,
-              ),
-              const SizedBox(height: 16),
-              MobileMetrics(
-                children: [
-                  MobileMetric(
-                    label: '参与定位的卫星',
-                    value: '${info.satellites}',
-                    icon: Icons.satellite_alt,
-                  ),
-                  MobileMetric(
-                    label: info.type == PointType.pppsol
-                        ? '精度因子 DOP 1'
-                        : '水平精度因子 HDOP',
-                    value: info.dop1.toStringAsFixed(2),
-                    icon: Icons.track_changes,
-                  ),
-                  MobileMetric(
-                    label: '海拔',
-                    value: '${info.altitude.toStringAsFixed(2)} m',
-                    icon: Icons.height,
-                  ),
-                  if (info.type == PointType.pppsol) ...[
+              if (info != null) ...[
+                Text(
+                  '${info.type == PointType.pppsol ? 'PPP' : 'GGA'} UTC: ${info.utcTime}',
+                ),
+                const SizedBox(height: 16),
+                MobileStatusChip(
+                  _getStatusText(info.status, false, pointType: info.type),
+                  icon: Icons.gps_fixed,
+                  emphasized: true,
+                ),
+                const SizedBox(height: 16),
+                MobileMetrics(
+                  children: [
                     MobileMetric(
-                      label: '速度',
-                      value: '${info.speed.toStringAsFixed(3)} m/s',
-                      icon: Icons.speed_outlined,
+                      label: '参与定位的卫星',
+                      value: '${info.satellites}',
+                      icon: Icons.satellite_alt,
                     ),
                     MobileMetric(
-                      label: '位置精度',
-                      value: '${info.posAcc.toStringAsFixed(3)} m',
+                      label: info.type == PointType.pppsol
+                          ? '精度因子 DOP 1'
+                          : '水平精度因子 HDOP',
+                      value: info.dop1.toStringAsFixed(2),
+                      icon: Icons.track_changes,
+                    ),
+                    MobileMetric(
+                      label: '海拔',
+                      value: '${info.altitude.toStringAsFixed(2)} m',
+                      icon: Icons.height,
+                    ),
+                    if (info.type == PointType.pppsol) ...[
+                      MobileMetric(
+                        label: '速度',
+                        value: '${info.speed.toStringAsFixed(3)} m/s',
+                        icon: Icons.speed_outlined,
+                      ),
+                      MobileMetric(
+                        label: '位置精度',
+                        value: '${info.posAcc.toStringAsFixed(3)} m',
+                        icon: Icons.my_location,
+                      ),
+                      MobileMetric(
+                        label: '速度精度',
+                        value: '${info.speedAcc.toStringAsFixed(3)} m/s',
+                        icon: Icons.speed,
+                      ),
+                      MobileMetric(
+                        label: 'DOP 2 / DOP 3',
+                        value:
+                            '${info.dop2.toStringAsFixed(2)} / ${info.dop3.toStringAsFixed(2)}',
+                        icon: Icons.track_changes,
+                      ),
+                    ],
+                    if (info.type == PointType.gga &&
+                        [2, 4, 5].contains(info.status))
+                      MobileMetric(
+                        label: '差分龄期',
+                        value:
+                            '${info.differentialAge?.toStringAsFixed(1) ?? '--'} s',
+                        icon: Icons.schedule,
+                      ),
+                  ],
+                ),
+              ],
+              if (imu != null) ...[
+                Text('IMU UTC: ${_imuTime(imu)}'),
+                const SizedBox(height: 16),
+                MobileStatusChip(
+                  _getStatusText(
+                    _getEffectiveImuStatus(imu),
+                    true,
+                    pointType: PointType.imu,
+                  ),
+                  icon: Icons.navigation_outlined,
+                  emphasized: true,
+                ),
+                const SizedBox(height: 16),
+                MobileMetrics(
+                  children: [
+                    MobileMetric(
+                      label: 'GNSS / Fusion',
+                      value:
+                          '${imu.gnssState ?? '--'} / ${imu.fusionState ?? '--'}',
+                      icon: Icons.gps_fixed,
+                    ),
+                    MobileMetric(
+                      label: '纬度',
+                      value: imu.lat?.toStringAsFixed(8) ?? '--',
                       icon: Icons.my_location,
                     ),
                     MobileMetric(
-                      label: '速度精度',
-                      value: '${info.speedAcc.toStringAsFixed(3)} m/s',
+                      label: '经度',
+                      value: imu.lon?.toStringAsFixed(8) ?? '--',
+                      icon: Icons.my_location,
+                    ),
+                    MobileMetric(
+                      label: '海拔',
+                      value: '${imu.alt?.toStringAsFixed(2) ?? '--'} m',
+                      icon: Icons.height,
+                    ),
+                    MobileMetric(
+                      label: '速度',
+                      value: '${_imuSpeed(imu).toStringAsFixed(3)} m/s',
+                      icon: Icons.speed_outlined,
+                    ),
+                    MobileMetric(
+                      label: '姿态角（俯仰 / 横滚 / 航向）',
+                      value:
+                          '${imu.pitch?.toStringAsFixed(2) ?? '--'} / ${imu.roll?.toStringAsFixed(2) ?? '--'} / ${imu.yaw?.toStringAsFixed(2) ?? '--'} °',
+                      icon: Icons.explore_outlined,
+                    ),
+                    MobileMetric(
+                      label: '加速度（X / Y / Z）',
+                      value:
+                          '${imu.ax?.toStringAsFixed(3) ?? '--'} / ${imu.ay?.toStringAsFixed(3) ?? '--'} / ${imu.az?.toStringAsFixed(3) ?? '--'} g',
                       icon: Icons.speed,
                     ),
                     MobileMetric(
-                      label: 'DOP 2 / DOP 3',
+                      label: '角速度（X / Y / Z）',
                       value:
-                          '${info.dop2.toStringAsFixed(2)} / ${info.dop3.toStringAsFixed(2)}',
-                      icon: Icons.track_changes,
+                          '${imu.wx?.toStringAsFixed(3) ?? '--'} / ${imu.wy?.toStringAsFixed(3) ?? '--'} / ${imu.wz?.toStringAsFixed(3) ?? '--'} °/s',
+                      icon: Icons.rotate_right,
                     ),
                   ],
-                  if (info.type == PointType.gga &&
-                      [2, 4, 5].contains(info.status))
-                    MobileMetric(
-                      label: '差分龄期',
-                      value:
-                          '${info.differentialAge?.toStringAsFixed(1) ?? '--'} s',
-                      icon: Icons.schedule,
-                    ),
-                ],
-              ),
+                ),
+              ],
             ],
           ),
         ),
@@ -1348,7 +1444,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     }
 
     final compactToolbar =
-        widget.ggaOnly || MediaQuery.sizeOf(context).width < 720;
+        widget.mobileLayout || MediaQuery.sizeOf(context).width < 720;
     final actions = _mobileMapActions();
     final mqttTracks = _mqtt.tracks.entries.where(
       (entry) => _mqtt.layers.isVisible(entry.key),
@@ -1371,7 +1467,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
             : null,
         actions: compactToolbar ? [actions.first] : actions,
       ),
-      bottomNavigationBar: widget.ggaOnly || _mqttMode
+      bottomNavigationBar: widget.mobileLayout || _mqttMode
           ? null
           : _buildLegendBar(),
       body: Stack(
@@ -1455,9 +1551,9 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                 ),
             ],
           ),
-          if (widget.ggaOnly || _currentImuInfo == null)
+          if (widget.mobileLayout || _currentImuInfo == null)
             Positioned(top: 12, left: 12, right: 12, child: _positionSummary()),
-          if (!widget.ggaOnly && _currentImuInfo != null)
+          if (!widget.mobileLayout && _currentImuInfo != null)
             Positioned(
               top: 10,
               left: 10,
@@ -1524,9 +1620,9 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
               _showTimeline &&
               _isImportMode)
             Positioned(
-              bottom: widget.ggaOnly ? 12 : 20,
-              left: widget.ggaOnly ? 12 : 20,
-              right: widget.ggaOnly ? 12 : 20,
+              bottom: widget.mobileLayout ? 12 : 20,
+              left: widget.mobileLayout ? 12 : 20,
+              right: widget.mobileLayout ? 12 : 20,
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
@@ -1570,8 +1666,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                       ),
                       padding: EdgeInsets.zero,
                       constraints: BoxConstraints(
-                        minWidth: widget.ggaOnly ? 48 : 28,
-                        minHeight: widget.ggaOnly ? 48 : 28,
+                        minWidth: widget.mobileLayout ? 48 : 28,
+                        minHeight: widget.mobileLayout ? 48 : 28,
                       ),
                       onPressed: () {
                         if (visibleIndices.isEmpty) return;
@@ -1595,8 +1691,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                       ),
                       padding: EdgeInsets.zero,
                       constraints: BoxConstraints(
-                        minWidth: widget.ggaOnly ? 48 : 28,
-                        minHeight: widget.ggaOnly ? 48 : 28,
+                        minWidth: widget.mobileLayout ? 48 : 28,
+                        minHeight: widget.mobileLayout ? 48 : 28,
                       ),
                       onPressed: () {
                         if (visibleIndices.isEmpty) return;
@@ -1664,7 +1760,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      widget.ggaOnly ? '正在导入 GGA 数据...' : '正在导入IMU数据...',
+                      '正在导入定位数据...',
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 13,

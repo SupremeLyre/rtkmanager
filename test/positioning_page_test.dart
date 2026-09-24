@@ -146,34 +146,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       void receive(int second) {
-        final utc = ByteData(11)
-          ..setUint16(4, 26, Endian.little)
-          ..setUint8(6, 9)
-          ..setUint8(7, 24)
-          ..setUint8(8, 12)
-          ..setUint8(10, second);
-        final position = ByteData(20)
-          ..setInt64(0, 305200000000 + second * 10000, Endian.little)
-          ..setInt64(8, 1143500000000, Endian.little)
-          ..setInt32(16, 35000, Endian.little);
-        final payload = [
-          0x50,
-          11,
-          ...utc.buffer.asUint8List(),
-          0x68,
-          20,
-          ...position.buffer.asUint8List(),
-          0x80,
-          1,
-          0x45,
-        ];
-        final bytes = [0x59, 0x53, second, 0, payload.length, ...payload];
-        var ck1 = 0, ck2 = 0;
-        for (final byte in bytes.skip(2)) {
-          ck1 = (ck1 + byte) & 255;
-          ck2 = (ck2 + ck1) & 255;
-        }
-        ImuDataParser().parseData([...bytes, ck1, ck2], (_) {});
+        ImuDataParser().parseData(_imuPositionFrame(second), (_) {});
       }
 
       receive(1);
@@ -430,6 +403,23 @@ void main() {
         await tester.pumpAndSettle();
         await tester.tap(find.text('MQTT 连接设置'));
         await tester.pumpAndSettle();
+        if (const bool.fromEnvironment('CAPTURE_UI_PREVIEWS')) {
+          await tester.runAsync(() async {
+            final boundary =
+                previewKey.currentContext!.findRenderObject()!
+                    as RenderRepaintBoundary;
+            final image = await boundary.toImage();
+            final bytes = await image.toByteData(
+              format: ui.ImageByteFormat.png,
+            );
+            final file = File(
+              'build/ui-previews/mqtt-receive-${size.width.toInt()}-$scale.png',
+            );
+            await file.parent.create(recursive: true);
+            await file.writeAsBytes(bytes!.buffer.asUint8List());
+            image.dispose();
+          });
+        }
         await tester.enterText(
           find.byKey(const ValueKey('mqtt-host')),
           'https://invalid',
@@ -439,6 +429,27 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text('请输入域名或 IP，不含协议前缀和路径'), findsOneWidget);
         expect(mqtt.isActive, isFalse);
+        await tester.ensureVisible(find.text('接收日志'));
+        await tester.runAsync(() async {
+          await tester.tap(find.text('接收日志'));
+          final deadline = DateTime.now().add(const Duration(seconds: 5));
+          while (find.byType(SelectableText).evaluate().isEmpty &&
+              DateTime.now().isBefore(deadline)) {
+            await Future<void>.delayed(const Duration(milliseconds: 10));
+            await tester.pump();
+          }
+        });
+        await tester.pumpAndSettle();
+        expect(find.byTooltip('关闭接收日志'), findsOneWidget);
+        await tester.tap(find.byTooltip('关闭接收日志'));
+        await tester.pumpAndSettle();
+        expect(
+          tester
+              .widget<TextFormField>(find.byKey(const ValueKey('mqtt-host')))
+              .controller!
+              .text,
+          'https://invalid',
+        );
         await tester.ensureVisible(find.byTooltip('关闭 MQTT 设置'));
         await tester.tap(find.byTooltip('关闭 MQTT 设置'));
         await tester.pumpAndSettle();
@@ -511,6 +522,13 @@ void main() {
     testWidgets('GGA controls fit without a legend at $size / $scale', (
       tester,
     ) async {
+      input.writeAsStringSync(
+        input
+            .readAsStringSync()
+            .split('\r\n')
+            .where((line) => !line.startsWith(r'$PPPSOL'))
+            .join('\r\n'),
+      );
       await HttpOverrides.runZoned(() async {
         tester.view.devicePixelRatio = 1;
         tester.view.physicalSize = size;
@@ -526,7 +544,10 @@ void main() {
               ),
               child: AndroidAppFrame(child: child!),
             ),
-            home: MobilePositioningPage(ggaOnly: true, onOpenDrawer: () {}),
+            home: MobilePositioningPage(
+              mobileLayout: true,
+              onOpenDrawer: () {},
+            ),
           ),
         );
         await tester.pump();
@@ -549,7 +570,7 @@ void main() {
         );
 
         await tester.runAsync(() async {
-          await tester.tap(find.byTooltip('导入 GGA 文件'));
+          await tester.tap(find.byTooltip('导入定位文件'));
           final deadline = DateTime.now().add(const Duration(seconds: 10));
           while (find.textContaining('文件解析完成').evaluate().isEmpty &&
               DateTime.now().isBefore(deadline)) {
@@ -600,7 +621,7 @@ void main() {
           }
         }
         for (final tooltip in [
-          '导入 GGA 文件',
+          '导入定位文件',
           '自动跟随',
           '恢复北向（上北下南）',
           '隐藏时间轴',
@@ -621,7 +642,7 @@ void main() {
         );
         expect(
           tester.getBottomRight(title).dx,
-          lessThanOrEqualTo(tester.getTopLeft(find.byTooltip('导入 GGA 文件')).dx),
+          lessThanOrEqualTo(tester.getTopLeft(find.byTooltip('导入定位文件')).dx),
           reason: 'The full title must fit before the toolbar buttons',
         );
 
@@ -668,6 +689,143 @@ void main() {
     (const Size(320, 640), 2.0),
     (const Size(640, 360), 1.0),
   ]) {
+    testWidgets(
+      'Mobile mixed positioning supports PPP and IMU without legend at $size / $scale',
+      (tester) async {
+        input.writeAsBytesSync([
+          ...input.readAsBytesSync(),
+          ..._imuPositionFrame(1),
+          ..._imuPositionFrame(2),
+        ]);
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = size;
+        addTearDown(tester.view.resetDevicePixelRatio);
+        addTearDown(tester.view.resetPhysicalSize);
+        final previewKey = GlobalKey();
+        await HttpOverrides.runZoned(() async {
+          await tester.pumpWidget(
+            MaterialApp(
+              theme: mobileTheme(ThemeData(fontFamily: 'SourceHanSansHWSC')),
+              builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(
+                  context,
+                ).copyWith(textScaler: TextScaler.linear(scale)),
+                child: RepaintBoundary(key: previewKey, child: child!),
+              ),
+              home: MobilePositioningPage(
+                mobileLayout: true,
+                onOpenDrawer: () {},
+              ),
+            ),
+          );
+          await tester.pumpAndSettle();
+          await tester.runAsync(() async {
+            await tester.tap(find.byTooltip('导入定位文件'));
+            final deadline = DateTime.now().add(const Duration(seconds: 10));
+            while (find.textContaining('文件解析完成').evaluate().isEmpty &&
+                DateTime.now().isBefore(deadline)) {
+              await Future<void>.delayed(const Duration(milliseconds: 10));
+              await tester.pump();
+            }
+          });
+          expect(find.text('文件解析完成，共载入 8 个轨迹点'), findsOneWidget);
+          expect(
+            tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
+            hasLength(8),
+          );
+          expect(
+            tester.widget<Scaffold>(find.byType(Scaffold)).bottomNavigationBar,
+            isNull,
+          );
+          ScaffoldMessenger.of(
+            tester.element(find.byType(MobilePositioningPage)),
+          ).removeCurrentSnackBar();
+          await tester.pumpAndSettle();
+          await tester.tap(find.byTooltip('图层管理'));
+          await tester.pumpAndSettle();
+          for (final type in ['gga', 'pppsol', 'imu']) {
+            expect(find.byKey(ValueKey('layer-visible-$type')), findsOneWidget);
+          }
+          await tester.tap(find.text('全部隐藏'));
+          await tester.pumpAndSettle();
+          expect(
+            tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
+            isEmpty,
+          );
+          for (final (type, label, count) in [
+            ('pppsol', 'PPP UTC:', 1),
+            ('imu', 'IMU UTC:', 2),
+          ]) {
+            await tester.ensureVisible(
+              find.byKey(ValueKey('layer-visible-$type')),
+            );
+            await tester.tap(find.byKey(ValueKey('layer-visible-$type')));
+            await tester.pumpAndSettle();
+            expect(
+              tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
+              hasLength(count),
+            );
+            await tester.ensureVisible(find.byTooltip('关闭图层管理'));
+            await tester.tap(find.byTooltip('关闭图层管理'));
+            await tester.pumpAndSettle();
+            expect(find.textContaining(label), findsOneWidget);
+            expect(find.text('$count / $count'), findsOneWidget);
+            expect(
+              tester
+                  .widget<Scaffold>(find.byType(Scaffold))
+                  .bottomNavigationBar,
+              isNull,
+            );
+            if (type == 'imu' &&
+                const bool.fromEnvironment('CAPTURE_UI_PREVIEWS')) {
+              await tester.runAsync(() async {
+                final boundary =
+                    previewKey.currentContext!.findRenderObject()!
+                        as RenderRepaintBoundary;
+                final image = await boundary.toImage();
+                final bytes = await image.toByteData(
+                  format: ui.ImageByteFormat.png,
+                );
+                final file = File(
+                  'build/ui-previews/mobile-imu-position-${size.width.toInt()}-$scale.png',
+                );
+                await file.parent.create(recursive: true);
+                await file.writeAsBytes(bytes!.buffer.asUint8List());
+                image.dispose();
+              });
+            }
+            await tester.tap(find.byTooltip('查看定位详情'));
+            await tester.pumpAndSettle();
+            expect(
+              find.text(type == 'imu' ? 'GNSS / Fusion' : '精度因子 DOP 1'),
+              findsOneWidget,
+            );
+            if (type == 'imu') {
+              expect(find.text('30.52000200'), findsOneWidget);
+              expect(find.text('114.35000000'), findsOneWidget);
+              await tester.scrollUntilVisible(
+                find.text('角速度（X / Y / Z）'),
+                160,
+                scrollable: find.byType(Scrollable).last,
+              );
+              expect(find.text('角速度（X / Y / Z）').hitTestable(), findsOneWidget);
+            }
+            await tester.ensureVisible(find.byTooltip('关闭定位详情'));
+            await tester.tap(find.byTooltip('关闭定位详情'));
+            await tester.pumpAndSettle();
+            await tester.tap(find.byTooltip('图层管理'));
+            await tester.pumpAndSettle();
+            await tester.tap(find.text('全部隐藏'));
+            await tester.pumpAndSettle();
+          }
+          expect(find.byTooltip('查看定位详情'), findsNothing);
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox());
+          await tester.pumpAndSettle();
+        }, createHttpClient: (_) => _TileHttpClient());
+      },
+    );
+
     testWidgets('Device home and drawer preserve live GGA at $size / $scale', (
       tester,
     ) async {
@@ -806,7 +964,7 @@ void main() {
         final title = find.text('定位结果');
         expect(
           tester.getBottomRight(title).dx,
-          lessThanOrEqualTo(tester.getTopLeft(find.byTooltip('导入 GGA 文件')).dx),
+          lessThanOrEqualTo(tester.getTopLeft(find.byTooltip('导入定位文件')).dx),
         );
         expect(find.byTooltip('恢复北向（上北下南）').hitTestable(), findsOneWidget);
         expect(tester.takeException(), isNull);
@@ -932,6 +1090,37 @@ void main() {
       }, createHttpClient: (_) => _TileHttpClient());
     });
   }
+}
+
+List<int> _imuPositionFrame(int second) {
+  final utc = ByteData(11)
+    ..setUint16(4, 26, Endian.little)
+    ..setUint8(6, 9)
+    ..setUint8(7, 24)
+    ..setUint8(8, 12)
+    ..setUint8(10, second);
+  final position = ByteData(20)
+    ..setInt64(0, 305200000000 + second * 10000, Endian.little)
+    ..setInt64(8, 1143500000000, Endian.little)
+    ..setInt32(16, 35000, Endian.little);
+  final payload = [
+    0x50,
+    11,
+    ...utc.buffer.asUint8List(),
+    0x68,
+    20,
+    ...position.buffer.asUint8List(),
+    0x80,
+    1,
+    0x45,
+  ];
+  final bytes = [0x59, 0x53, second, 0, payload.length, ...payload];
+  var ck1 = 0, ck2 = 0;
+  for (final byte in bytes.skip(2)) {
+    ck1 = (ck1 + byte) & 255;
+    ck2 = (ck2 + ck1) & 255;
+  }
+  return [...bytes, ck1, ck2];
 }
 
 class _TestFilePicker extends FilePicker {
