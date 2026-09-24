@@ -9,6 +9,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:rtkmanager/trajectory_layer.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rtkmanager/android_home_page.dart';
 import 'package:rtkmanager/android_app_frame.dart';
@@ -151,10 +153,7 @@ void main() {
 
       receive(1);
       await tester.pumpAndSettle();
-      expect(
-        tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
-        hasLength(1),
-      );
+      expect(_mapPoints(tester), hasLength(1));
       await tester.tap(find.byTooltip('图层管理'));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('layer-visible-imu')));
@@ -162,16 +161,10 @@ void main() {
       receive(2);
       await tester.pumpAndSettle();
       expect(find.text('2 个轨迹点'), findsOneWidget);
-      expect(
-        tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
-        isEmpty,
-      );
+      expect(_mapPoints(tester), isEmpty);
       await tester.tap(find.byKey(const ValueKey('layer-visible-imu')));
       await tester.pumpAndSettle();
-      expect(
-        tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
-        hasLength(2),
-      );
+      expect(_mapPoints(tester), hasLength(2));
       await tester.tap(find.byTooltip('关闭图层管理'));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('数据来源'));
@@ -182,20 +175,14 @@ void main() {
       await tester.pumpAndSettle();
       receive(3);
       await tester.pumpAndSettle();
-      expect(
-        tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
-        isEmpty,
-      );
+      expect(_mapPoints(tester), isEmpty);
       await tester.tap(find.byTooltip('数据来源'));
       await tester.pumpAndSettle();
       await tester.tap(
         find.widgetWithText(CheckedPopupMenuItem<String>, '串口 / 离线文件'),
       );
       await tester.pumpAndSettle();
-      expect(
-        tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
-        hasLength(3),
-      );
+      expect(_mapPoints(tester), hasLength(3));
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();
@@ -269,10 +256,7 @@ void main() {
           tester.element(find.byType(MobilePositioningPage)),
         ).removeCurrentSnackBar();
         await tester.pumpAndSettle();
-        final localCount = tester
-            .widget<MarkerLayer>(find.byType(MarkerLayer))
-            .markers
-            .length;
+        final localCount = _mapPoints(tester).length;
         expect(localCount, 6);
         await tester.tap(find.byTooltip('数据来源'));
         await tester.pumpAndSettle();
@@ -292,10 +276,7 @@ void main() {
         expect(lines.first.color, mqtt.layers['fusion_device_a']!.color);
         expect(lines.last.color, mqtt.layers['fusion_device_b']!.color);
         expect(lines.first.color, isNot(lines.last.color));
-        expect(
-          tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
-          hasLength(6),
-        );
+        expect(_mapPoints(tester), hasLength(6));
 
         await tester.tap(find.byTooltip('查看定位详情'));
         await tester.pumpAndSettle();
@@ -330,17 +311,11 @@ void main() {
         await tester.ensureVisible(find.text('全部隐藏'));
         await tester.tap(find.text('全部隐藏'));
         await tester.pumpAndSettle();
-        expect(
-          tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
-          isEmpty,
-        );
+        expect(_mapPoints(tester), isEmpty);
         expect(find.byTooltip('查看定位详情'), findsNothing);
         await tester.tap(find.text('全部显示'));
         await tester.pumpAndSettle();
-        expect(
-          tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
-          hasLength(7),
-        );
+        expect(_mapPoints(tester), hasLength(7));
         if (const bool.fromEnvironment('CAPTURE_UI_PREVIEWS')) {
           await tester.runAsync(() async {
             final boundary =
@@ -367,10 +342,7 @@ void main() {
           find.widgetWithText(CheckedPopupMenuItem<String>, '串口 / 离线文件'),
         );
         await tester.pumpAndSettle();
-        expect(
-          tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
-          hasLength(localCount),
-        );
+        expect(_mapPoints(tester), hasLength(localCount));
         expect(
           tester.widget<Scaffold>(find.byType(Scaffold)).bottomNavigationBar,
           isNotNull,
@@ -382,19 +354,13 @@ void main() {
         );
         await tester.tap(find.byKey(const ValueKey('layer-visible-gga')));
         await tester.pumpAndSettle();
-        expect(
-          tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
-          hasLength(1),
-        );
+        expect(_mapPoints(tester), hasLength(1));
         await tester.ensureVisible(
           find.byKey(const ValueKey('layer-visible-pppsol')),
         );
         await tester.tap(find.byKey(const ValueKey('layer-visible-pppsol')));
         await tester.pumpAndSettle();
-        expect(
-          tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
-          isEmpty,
-        );
+        expect(_mapPoints(tester), isEmpty);
         expect(find.byKey(const ValueKey('layer-visible-imu')), findsOneWidget);
         await tester.ensureVisible(find.byTooltip('关闭图层管理'));
         await tester.tap(find.byTooltip('关闭图层管理'));
@@ -579,8 +545,8 @@ void main() {
           }
         });
         expect(find.text('文件解析完成，共载入 5 个轨迹点'), findsOneWidget);
-        final markers = tester.widget<MarkerLayer>(find.byType(MarkerLayer));
-        expect(markers.markers.length, 5);
+        final markers = _mapPoints(tester);
+        expect(markers.length, 5);
         expect(find.text('1 / 5'), findsOneWidget);
         expect(tester.widget<IconButton>(followButton).isSelected, isFalse);
 
@@ -673,10 +639,7 @@ void main() {
 
         await tester.tap(find.byTooltip('清除轨迹'));
         await tester.pump();
-        expect(
-          tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
-          isEmpty,
-        );
+        expect(_mapPoints(tester), isEmpty);
         expect(find.byType(Slider), findsNothing);
         await tester.pumpWidget(const SizedBox());
         await tester.pumpAndSettle();
@@ -729,10 +692,7 @@ void main() {
             }
           });
           expect(find.text('文件解析完成，共载入 8 个轨迹点'), findsOneWidget);
-          expect(
-            tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
-            hasLength(8),
-          );
+          expect(_mapPoints(tester), hasLength(8));
           expect(
             tester.widget<Scaffold>(find.byType(Scaffold)).bottomNavigationBar,
             isNull,
@@ -748,10 +708,7 @@ void main() {
           }
           await tester.tap(find.text('全部隐藏'));
           await tester.pumpAndSettle();
-          expect(
-            tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
-            isEmpty,
-          );
+          expect(_mapPoints(tester), isEmpty);
           for (final (type, label, count) in [
             ('pppsol', 'PPP UTC:', 1),
             ('imu', 'IMU UTC:', 2),
@@ -761,10 +718,7 @@ void main() {
             );
             await tester.tap(find.byKey(ValueKey('layer-visible-$type')));
             await tester.pumpAndSettle();
-            expect(
-              tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
-              hasLength(count),
-            );
+            expect(_mapPoints(tester), hasLength(count));
             await tester.ensureVisible(find.byTooltip('关闭图层管理'));
             await tester.tap(find.byTooltip('关闭图层管理'));
             await tester.pumpAndSettle();
@@ -926,14 +880,7 @@ void main() {
 
         receive('GPRMC,123456,A,3031.7071,N,11421.4181,E,0,0,180926,,,A');
         await tester.pump();
-        expect(
-          tester
-              .widget<MarkerLayer>(
-                find.byType(MarkerLayer, skipOffstage: false),
-              )
-              .markers,
-          isEmpty,
-        );
+        expect(_mapPoints(tester), isEmpty);
         receive(
           'GPGGA,123456.00,3031.7071,N,11421.4181,E,6,18,0.8,35.2,M,0,M,1.0,0000',
         );
@@ -948,15 +895,13 @@ void main() {
         await tester.pump();
         await tester.tap(find.text('查看定位结果'));
         await tester.pumpAndSettle();
-        final markers = tester
-            .widget<MarkerLayer>(find.byType(MarkerLayer))
-            .markers;
+        final markers = _mapPoints(tester);
         expect(markers.length, 1);
         expect(find.text('DR (6)'), findsOneWidget);
         final map = tester
             .widget<FlutterMap>(find.byType(FlutterMap))
             .mapController!;
-        expect(map.camera.center, markers.single.point);
+        expect(map.camera.center, markers.single);
         final importButton = tester.widget<IconButton>(
           find.widgetWithIcon(IconButton, Icons.file_open),
         );
@@ -979,11 +924,7 @@ void main() {
           'GPGGA,123457.00,3031.8071,N,11421.5181,E,4,18,0.8,35.2,M,0,M,1.0,0000',
         );
         await tester.pump();
-        final secondPoint = tester
-            .widget<MarkerLayer>(find.byType(MarkerLayer))
-            .markers
-            .last
-            .point;
+        final secondPoint = _mapPoints(tester).last;
         expect(secondPoint, isNot(previousCenter));
         expect(map.camera.center, previousCenter);
         final zoom = map.camera.zoom;
@@ -998,14 +939,7 @@ void main() {
           'GPGGA,123458.00,3031.9071,N,11421.6181,E,4,18,0.8,35.2,M,0,M,1.0,0000',
         );
         await tester.pump();
-        expect(
-          map.camera.center,
-          tester
-              .widget<MarkerLayer>(find.byType(MarkerLayer))
-              .markers
-              .last
-              .point,
-        );
+        expect(map.camera.center, _mapPoints(tester).last);
 
         Future<void> navigate(String label) async {
           await tester.tap(find.byTooltip('打开导航'));
@@ -1072,10 +1006,7 @@ void main() {
           'GPGGA,123457.00,3031.8071,N,11421.5181,E,4,18,0.8,35.2,M,0,M,1.0,0000',
         );
         await tester.pump();
-        expect(
-          tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers.length,
-          3,
-        );
+        expect(_mapPoints(tester).length, 3);
         expect(
           tester
               .widget<IconButton>(
@@ -1222,3 +1153,18 @@ class _TileResponse extends Stream<List<int>> implements HttpClientResponse {
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
+
+// Check visible observations and interactive device pins independently of the
+// rendering strategy; hiding a layer must preserve its stored observations.
+List<LatLng> _mapPoints(WidgetTester tester) => [
+  ...tester
+      .widget<TrajectoryLayer>(
+        find.byType(TrajectoryLayer, skipOffstage: false),
+      )
+      .points
+      .map((point) => point.point),
+  ...tester
+      .widget<MarkerLayer>(find.byType(MarkerLayer, skipOffstage: false))
+      .markers
+      .map((marker) => marker.point),
+];

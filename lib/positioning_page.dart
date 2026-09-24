@@ -2,7 +2,6 @@ import 'dart:io';
 import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
-import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
@@ -15,6 +14,7 @@ import 'app_ui.dart';
 import 'position_data.dart';
 import 'map_layer_controller.dart';
 import 'map_layer_panel.dart';
+import 'trajectory_layer.dart';
 import 'mqtt_position_service.dart';
 import 'mqtt_connection_panel.dart';
 import 'mqtt_archive_panel.dart';
@@ -499,11 +499,14 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     });
   }
 
-  Marker _buildTrajectoryMarker(PositionHistoryPoint point, {Color? color}) {
+  TrajectoryPoint _buildTrajectoryPoint(
+    PositionHistoryPoint point, {
+    Color? color,
+  }) {
     final shape = switch (point.type) {
-      PointType.gga => _TrajectoryMarkerShape.circle,
-      PointType.imu => _TrajectoryMarkerShape.square,
-      PointType.pppsol => _TrajectoryMarkerShape.cross,
+      PointType.gga => TrajectoryShape.circle,
+      PointType.imu => TrajectoryShape.square,
+      PointType.pppsol => TrajectoryShape.cross,
     };
     final baseSize = switch (point.type) {
       PointType.gga => 6.0,
@@ -523,25 +526,16 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     final showOutline = _trajectoryDetailLevel == 2;
     final size = baseSize * sizeScale;
 
-    return Marker(
+    return TrajectoryPoint(
       point: point.location,
-      width: size,
-      height: size,
-      child: CustomPaint(
-        painter: _TrajectoryPointPainter(
-          shape: shape,
-          color:
-              color ??
-              _getColorForStatus(
-                point.status,
-                point.isImu,
-                pointType: point.type,
-              ),
-          borderColor: showOutline ? Colors.white : Colors.transparent,
-          strokeWidth: showOutline ? 0.5 : 0,
-          fillOpacity: fillOpacity,
-        ),
-      ),
+      shape: shape,
+      size: size,
+      color:
+          color ??
+          _getColorForStatus(point.status, point.isImu, pointType: point.type),
+      borderColor: showOutline ? Colors.white : Colors.transparent,
+      strokeWidth: showOutline ? 0.5 : 0,
+      fillOpacity: fillOpacity,
     );
   }
 
@@ -597,7 +591,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     final colorScheme = Theme.of(context).colorScheme;
     final textColor = colorScheme.onSurface;
 
-    Widget legendItem(String label, Color color, _TrajectoryMarkerShape shape) {
+    Widget legendItem(String label, Color color, TrajectoryShape shape) {
       return Padding(
         padding: const EdgeInsets.only(right: 10),
         child: Row(
@@ -606,7 +600,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
             SizedBox.square(
               dimension: 12,
               child: CustomPaint(
-                painter: _TrajectoryPointPainter(
+                painter: TrajectorySymbolPainter(
                   shape: shape,
                   color: color,
                   borderColor: textColor.withValues(alpha: 0.55),
@@ -623,7 +617,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
 
     Widget legendGroup(
       String title,
-      _TrajectoryMarkerShape shape,
+      TrajectoryShape shape,
       List<(String, Color)> items,
     ) {
       return Row(
@@ -686,7 +680,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
             padding: const EdgeInsets.symmetric(horizontal: 10),
             child: Row(
               children: [
-                legendGroup('GGA', _TrajectoryMarkerShape.circle, [
+                legendGroup('GGA', TrajectoryShape.circle, [
                   (
                     'SPP',
                     _getColorForStatus(1, false, pointType: PointType.gga),
@@ -705,7 +699,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                   ),
                 ]),
                 divider(),
-                legendGroup('Fusion', _TrajectoryMarkerShape.square, [
+                legendGroup('Fusion', TrajectoryShape.square, [
                   (
                     'SPP',
                     _getColorForStatus(1, true, pointType: PointType.imu),
@@ -725,7 +719,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                   ('DR', _getColorForStatus(6, true, pointType: PointType.imu)),
                 ]),
                 divider(),
-                legendGroup('PPPSOL', _TrajectoryMarkerShape.cross, [
+                legendGroup('PPPSOL', TrajectoryShape.cross, [
                   (
                     'DOPPLER',
                     _getColorForStatus(2, false, pointType: PointType.pppsol),
@@ -744,7 +738,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                   ),
                 ]),
                 divider(),
-                legendItem('未知', Colors.grey, _TrajectoryMarkerShape.circle),
+                legendItem('未知', Colors.grey, TrajectoryShape.circle),
                 selectedItem(),
               ],
             ),
@@ -1506,36 +1500,41 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                         ),
                   ],
                 ),
-              MarkerLayer(
-                markers: _mqttMode
+              TrajectoryLayer(
+                points: _mqttMode
                     ? [
                         for (final entry in mqttTracks)
                           for (final fix in entry.value.points)
-                            _buildTrajectoryMarker(
+                            _buildTrajectoryPoint(
                               fix.position,
                               color: _mqtt.layers[entry.key]!.color,
-                            ),
-                        for (final entry in mqttTracks)
-                          if (entry.value.latest != null)
-                            Marker(
-                              point: entry.value.latest!.position.location,
-                              width: 48,
-                              height: 48,
-                              child: IconButton(
-                                tooltip: entry.key,
-                                onPressed: () => _locateMqttDevice(entry.key),
-                                icon: Icon(
-                                  Icons.location_on,
-                                  color: _mqtt.layers[entry.key]!.color,
-                                  size: 28,
-                                ),
-                              ),
                             ),
                       ]
                     : _points
                           .where(_isLocalPointVisible)
-                          .map(_buildTrajectoryMarker)
+                          .map(_buildTrajectoryPoint)
                           .toList(),
+              ),
+              MarkerLayer(
+                markers: [
+                  if (_mqttMode)
+                    for (final entry in mqttTracks)
+                      if (entry.value.latest != null)
+                        Marker(
+                          point: entry.value.latest!.position.location,
+                          width: 48,
+                          height: 48,
+                          child: IconButton(
+                            tooltip: entry.key,
+                            onPressed: () => _locateMqttDevice(entry.key),
+                            icon: Icon(
+                              Icons.location_on,
+                              color: _mqtt.layers[entry.key]!.color,
+                              size: 28,
+                            ),
+                          ),
+                        ),
+                ],
               ),
               if (visibleIndices.isNotEmpty)
                 CircleLayer(
@@ -1794,84 +1793,6 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         ],
       ),
     );
-  }
-}
-
-enum _TrajectoryMarkerShape { circle, square, cross }
-
-class _TrajectoryPointPainter extends CustomPainter {
-  final _TrajectoryMarkerShape shape;
-  final Color color;
-  final Color borderColor;
-  final double strokeWidth;
-  final double fillOpacity;
-
-  const _TrajectoryPointPainter({
-    required this.shape,
-    required this.color,
-    required this.borderColor,
-    this.strokeWidth = 0.8,
-    this.fillOpacity = 0.88,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final inset = strokeWidth / 2;
-    final rect = Rect.fromLTWH(
-      inset,
-      inset,
-      size.width - strokeWidth,
-      size.height - strokeWidth,
-    );
-    final path = ui.Path();
-
-    switch (shape) {
-      case _TrajectoryMarkerShape.circle:
-        path.addOval(rect);
-      case _TrajectoryMarkerShape.square:
-        path.addRect(rect);
-      case _TrajectoryMarkerShape.cross:
-        final centerX = size.width / 2;
-        final centerY = size.height / 2;
-        final halfBarWidth = size.shortestSide * 0.14;
-        path
-          ..moveTo(centerX - halfBarWidth, inset)
-          ..lineTo(centerX + halfBarWidth, inset)
-          ..lineTo(centerX + halfBarWidth, centerY - halfBarWidth)
-          ..lineTo(size.width - inset, centerY - halfBarWidth)
-          ..lineTo(size.width - inset, centerY + halfBarWidth)
-          ..lineTo(centerX + halfBarWidth, centerY + halfBarWidth)
-          ..lineTo(centerX + halfBarWidth, size.height - inset)
-          ..lineTo(centerX - halfBarWidth, size.height - inset)
-          ..lineTo(centerX - halfBarWidth, centerY + halfBarWidth)
-          ..lineTo(inset, centerY + halfBarWidth)
-          ..lineTo(inset, centerY - halfBarWidth)
-          ..lineTo(centerX - halfBarWidth, centerY - halfBarWidth)
-          ..close();
-    }
-
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = color.withValues(alpha: fillOpacity)
-        ..style = PaintingStyle.fill,
-    );
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = borderColor
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = strokeWidth,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _TrajectoryPointPainter oldDelegate) {
-    return shape != oldDelegate.shape ||
-        color != oldDelegate.color ||
-        borderColor != oldDelegate.borderColor ||
-        strokeWidth != oldDelegate.strokeWidth ||
-        fillOpacity != oldDelegate.fillOpacity;
   }
 }
 

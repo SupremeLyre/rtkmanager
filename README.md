@@ -8,7 +8,7 @@ RTK Manager 是一个基于 Flutter 的 GNSS / RTK 工具，提供串口调试�
 | --- | --- | --- |
 | 设备接入 | 多标签串口调试，支持 ASCII / HEX 收发 | BLE 扫描、连接与 GNSS 协议校验 |
 | RTK 配置 | NTRIP 连接、挂载点获取、RTCM 转发与保存 | — |
-| 定位结果 | 串口及文件中的 GGA、PPPSOL、IMU 导航结果 | 蓝牙 GGA 实时轨迹及 GGA 文件回放 |
+| 定位结果 | 串口及文件中的 GGA、PPPSOL、IMU 导航结果，MQTT 多设备轨迹 | 蓝牙 GGA、MQTT 多设备轨迹及 GGA / PPPSOL / IMU 文件回放 |
 | 卫星信息 | 可见卫星统计、信噪比图、天空图 | — |
 | 日志存储 | 串口原始数据及 RTCM 文件保存 | GGA 按 UTC 日期自动归档、打开、分享与删除 |
 | 手机数据采集 | — | GNSS 原始观测、加速度、角速度及磁场 |
@@ -40,6 +40,7 @@ RTK Manager 是一个基于 Flutter 的 GNSS / RTK 工具，提供串口调试�
 - 内置 WGS84 → GCJ-02 转换；按数据类型显示 UTC、定位状态、卫星数、海拔、DOP、速度及精度等信息。
 - 支持文件导入和时间轴逐历元查看。
 - “图层管理”分别控制 GGA、PPPSOL、IMU 轨迹显隐；隐藏只影响地图显示，实时数据仍进入有界缓存。
+- 桌面与安卓共用轨迹画布，缓存坐标投影与点符号，平移时只绘制可见范围；保留全部轨迹点、绘制顺序、形状和状态颜色。减少大量轨迹点带来的逐组件布局开销，高刷新率由系统与设备调度，不强制常亮或固定刷新率。
 - 解析 GSV 卫星信息，展示 GPS、GLONASS、Galileo、BeiDou、QZSS、NavIC 的可见卫星统计、信噪比及天空分布。
 
 ### MQTT 多设备定位（桌面 / 安卓）
@@ -82,7 +83,7 @@ RTK Manager 是一个基于 Flutter 的 GNSS / RTK 工具，提供串口调试�
 1. 开启系统定位，建议在室外点击“检测传感器”，授予精确位置权限。
 2. 勾选 GNSS、IMU 或磁传感器；IMU 同时检测加速度计和陀螺仪，两者都有有效数据才可勾选。
 3. 等待 **GNSS 时间同步**，分别设置 IMU（25 / 50 / 100 / 200 Hz）与磁力计（10 / 25 / 50 / 100 / 200 Hz）的请求频率，然后开始采集。页面显示硬件上限和实测输出频率，超过硬件能力的请求按上限注册。
-4. 采集通过安卓前台服务运行，可在页面或通知中停止；停止后分享采集文件。
+4. 采集通过安卓前台服务运行，可在页面或通知中停止；停止后分享采集文件。单文件直接分享，多文件在后台打包成一个 ZIP 后打开系统分享面板，支持微信等文件接收应用。ZIP 保留会话内的目录和文件名，原文件不变；临时 ZIP 在下次打包时清理超过 24 小时的缓存。
 5. 在“IMU 批量解码”选择“导入手机采集”，将 BIN 转换为 CSV。
 
 手机采集要求 Android 10 及以上，并且硬件能够提供 GNSS 与传感器时间的对应关系。未检测到有效数据的传感器不可勾选；仅采集 IMU / 磁场也需要 GNSS 授时，完成时间同步后才能开始采集。
@@ -241,7 +242,16 @@ flutter test
 
 测试覆盖 GGA 解析与日志、蓝牙连接状态、六轴 IMU 解码与 CSV 输出、手机采集的传感器和授时条件、独立采样率、实时曲线数据流、串口切换，以及安全区、小屏、横屏、大字体和减少动画设置下的页面布局。
 
+轨迹画布测试还对比旧版标记的像素输出（允许符号缓存产生的边缘抗锯齿差异），覆盖重叠点、旋转、非整数缩放、日期变更线和重复世界；17,000 点场景检查拖动、缩放时复用投影缓存。
+
 原生采集格式校验及跨语言样本位于 `test/native/` 和 `test/fixtures/`，说明见 [手机原始数据采集](docs/phone-capture.md)。
+
+文件分享打包回归可使用 JDK 执行，验证单文件、ZIP 内容与目录、重复文件、路径越界及过期缓存清理：
+
+```bash
+javac -encoding UTF-8 -d build/capture-share-classes android/app/src/main/java/com/example/rtkmanager/CaptureShareFiles.java test/native/CaptureShareFilesCheck.java
+java -cp build/capture-share-classes CaptureShareFilesCheck
+```
 
 Windows DPI 同步回归可在已配置 Visual Studio C++ 工具链的终端执行：
 

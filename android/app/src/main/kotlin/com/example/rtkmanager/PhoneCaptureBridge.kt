@@ -18,6 +18,7 @@ class PhoneCaptureBridge(private val activity: Activity, messenger: BinaryMessen
     private val engine = PhoneCaptureEngine.get(activity)
     private val main = Handler(Looper.getMainLooper())
     private var permissionResult: MethodChannel.Result? = null
+    private var disposed = false
     init { methods.setMethodCallHandler(this); events.setStreamHandler(this) }
     override fun onListen(args: Any?, sink: EventChannel.EventSink) {
         engine.listener = { sink.success(it) }; sink.success(engine.snapshot)
@@ -56,19 +57,29 @@ class PhoneCaptureBridge(private val activity: Activity, messenger: BinaryMessen
                     result.success(dir.path)
                 }
                 "share" -> {
-                    check(engine.snapshot["mode"] != "recording") { "请先停止采集再分享文件" }
-                    val root = engine.root.canonicalFile
                     val paths = call.argument<List<String>>("paths") ?: emptyList()
-                    require(paths.isNotEmpty()) { "没有可分享的文件" }
-                    val uris = ArrayList(paths.map { path ->
-                        val file = File(path).canonicalFile
-                        require(file.isFile && file.path.startsWith(root.path + File.separator)) { "文件不在采集目录中" }
-                        FileProvider.getUriForFile(activity, "${activity.packageName}.gga_logs", file)
-                    })
-                    val intent = Intent(Intent.ACTION_SEND_MULTIPLE).setType("application/octet-stream")
-                        .putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    intent.clipData = ClipData.newRawUri("手机原始数据", uris.first()).also { clip -> uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) } }
-                    activity.startActivity(Intent.createChooser(intent, "分享采集数据")); result.success(null)
+                    engine.worker.post {
+                        try {
+                            check(engine.snapshot["mode"] != "recording") { "请先停止采集再分享文件" }
+                            val file = CaptureShareFiles.prepare(engine.root, activity.cacheDir, paths)
+                            main.post {
+                                try {
+                                    check(!disposed && !activity.isFinishing && !activity.isDestroyed) { "页面已关闭，请重新分享" }
+                                    val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.gga_logs", file)
+                                    // WeChat accepts a single file but not SEND_MULTIPLE with
+                                    // binary attachments. Multiple files are streamed into a ZIP.
+                                    val intent = Intent(Intent.ACTION_SEND)
+                                        .setType(if (file.extension == "zip") "application/zip" else "application/octet-stream")
+                                        .putExtra(Intent.EXTRA_STREAM, uri)
+                                        .putExtra(Intent.EXTRA_TITLE, file.name)
+                                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    intent.clipData = ClipData.newRawUri(file.name, uri)
+                                    activity.startActivity(Intent.createChooser(intent, "分享采集数据"))
+                                    result.success(null)
+                                } catch (e: Exception) { result.error("share", e.message ?: "分享失败", null) }
+                            }
+                        } catch (e: Exception) { main.post { result.error("share", e.message ?: "文件打包失败", null) } }
+                    }
                 }
                 else -> result.notImplemented()
             }
@@ -86,6 +97,7 @@ class PhoneCaptureBridge(private val activity: Activity, messenger: BinaryMessen
         } else try { beginProbe(); result.success(null) } catch (e: Exception) { result.error("capture", e.message, null) }
     }
     fun dispose() {
+        disposed = true
         permissionResult?.error("closed", "页面已关闭", null); permissionResult = null
         engine.listener = null; methods.setMethodCallHandler(null); events.setStreamHandler(null)
     }

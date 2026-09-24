@@ -6,4 +6,5 @@
     <files-path name="mqtt_logs_internal" path="MQTT/" />
     <external-files-path name="phone_capture" path="Documents/PhoneCapture/" />
     <files-path name="phone_capture_internal" path="PhoneCapture/" />
+    <cache-path name="capture_share" path="capture-share/" />
 </paths>
