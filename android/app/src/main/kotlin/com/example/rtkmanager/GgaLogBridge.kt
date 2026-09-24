@@ -19,6 +19,10 @@ class GgaLogBridge(private val activity: Activity, messenger: BinaryMessenger) :
         val external = activity.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
         File(external ?: activity.filesDir, "GGA").canonicalFile
     }
+    private val mqttDirectory: File by lazy {
+        val external = activity.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
+        File(external ?: activity.filesDir, "MQTT").canonicalFile
+    }
 
     init { channel.setMethodCallHandler(this) }
 
@@ -26,6 +30,20 @@ class GgaLogBridge(private val activity: Activity, messenger: BinaryMessenger) :
         try {
             when (call.method) {
                 "getLogDirectory" -> result.success(directory.path)
+                "getMqttLogDirectory" -> result.success(mqttDirectory.path)
+                "shareMqttLog" -> {
+                    val name = call.argument<String>("name") ?: ""
+                    require(Regex("MQTT[0-9]{8}\\.jsonl").matches(name)) { "无效的 MQTT 日志文件名" }
+                    val file = File(mqttDirectory, name).canonicalFile
+                    require(file.parentFile == mqttDirectory && file.isFile) { "日志文件已不存在" }
+                    val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.gga_logs", file)
+                    val intent = Intent(Intent.ACTION_SEND).setType("application/x-ndjson")
+                        .putExtra(Intent.EXTRA_STREAM, uri).putExtra(Intent.EXTRA_TITLE, name)
+                    intent.clipData = ClipData.newRawUri(name, uri)
+                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    activity.startActivity(Intent.createChooser(intent, "分享 MQTT 日志"))
+                    result.success(null)
+                }
                 "openLog", "shareLog" -> {
                     val name = call.argument<String>("name") ?: ""
                     require(Regex("GGA[0-9]{8}\\.txt").matches(name)) { "无效的 GGA 日志文件名" }

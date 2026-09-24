@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -14,6 +16,10 @@ import 'package:rtkmanager/app_ui.dart';
 import 'package:rtkmanager/gga_log_service.dart';
 import 'package:rtkmanager/gnss_ble_service.dart';
 import 'package:rtkmanager/positioning_page.dart';
+import 'package:rtkmanager/imu_data_parser.dart';
+import 'package:rtkmanager/mqtt_position_service.dart';
+import 'package:rtkmanager/mqtt_position_archive.dart';
+import 'mqtt_position_service_test.dart' show testPayload;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -35,6 +41,9 @@ void main() {
     await (FontLoader(
       'SourceHanSansHWSC',
     )..addFont(rootBundle.load('fonts/SourceHanSansHWSC-Regular.otf'))).load();
+    await (FontLoader(
+      'MaterialIcons',
+    )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
   });
 
   tearDownAll(() async {
@@ -98,7 +107,9 @@ void main() {
         await tester.binding.setSurfaceSize(size);
         await tester.pumpAndSettle();
         expect(find.text('PPP UTC: 12:34:56.00'), findsOneWidget);
-        expect(find.byType(MobilePanel), findsOneWidget);
+        expect(find.text('18'), findsOneWidget);
+        expect(find.text('1.00'), findsOneWidget);
+        expect(find.text('35.0 m'), findsOneWidget);
         expect(find.byTooltip('查看定位详情').hitTestable(), findsOneWidget);
         await tester.tap(find.byTooltip('查看定位详情'));
         await tester.pumpAndSettle();
@@ -123,6 +134,373 @@ void main() {
       await tester.pumpAndSettle();
     }, createHttpClient: (_) => _TileHttpClient());
   });
+
+  testWidgets('live IMU visibility and MQTT isolation preserve incoming data', (
+    tester,
+  ) async {
+    await HttpOverrides.runZoned(() async {
+      await tester.binding.setSurfaceSize(const Size(1000, 760));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(home: MobilePositioningPage(onOpenDrawer: () {})),
+      );
+      await tester.pumpAndSettle();
+      void receive(int second) {
+        final utc = ByteData(11)
+          ..setUint16(4, 26, Endian.little)
+          ..setUint8(6, 9)
+          ..setUint8(7, 24)
+          ..setUint8(8, 12)
+          ..setUint8(10, second);
+        final position = ByteData(20)
+          ..setInt64(0, 305200000000 + second * 10000, Endian.little)
+          ..setInt64(8, 1143500000000, Endian.little)
+          ..setInt32(16, 35000, Endian.little);
+        final payload = [
+          0x50,
+          11,
+          ...utc.buffer.asUint8List(),
+          0x68,
+          20,
+          ...position.buffer.asUint8List(),
+          0x80,
+          1,
+          0x45,
+        ];
+        final bytes = [0x59, 0x53, second, 0, payload.length, ...payload];
+        var ck1 = 0, ck2 = 0;
+        for (final byte in bytes.skip(2)) {
+          ck1 = (ck1 + byte) & 255;
+          ck2 = (ck2 + ck1) & 255;
+        }
+        ImuDataParser().parseData([...bytes, ck1, ck2], (_) {});
+      }
+
+      receive(1);
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
+        hasLength(1),
+      );
+      await tester.tap(find.byTooltip('图层管理'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('layer-visible-imu')));
+      await tester.pumpAndSettle();
+      receive(2);
+      await tester.pumpAndSettle();
+      expect(find.text('2 个轨迹点'), findsOneWidget);
+      expect(
+        tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
+        isEmpty,
+      );
+      await tester.tap(find.byKey(const ValueKey('layer-visible-imu')));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
+        hasLength(2),
+      );
+      await tester.tap(find.byTooltip('关闭图层管理'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('数据来源'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.widgetWithText(CheckedPopupMenuItem<String>, 'MQTT 轨迹'),
+      );
+      await tester.pumpAndSettle();
+      receive(3);
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
+        isEmpty,
+      );
+      await tester.tap(find.byTooltip('数据来源'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.widgetWithText(CheckedPopupMenuItem<String>, '串口 / 离线文件'),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
+        hasLength(3),
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    }, createHttpClient: (_) => _TileHttpClient());
+  });
+
+  for (final (size, scale) in [
+    (const Size(1000, 760), 1.0),
+    (const Size(320, 640), 1.0),
+    (const Size(320, 640), 2.0),
+    (const Size(640, 360), 1.3),
+  ]) {
+    testWidgets('MQTT device layers and source isolation at $size / $scale', (
+      tester,
+    ) async {
+      final mqtt = MqttPositionService(
+        archive: MqttPositionArchive(
+          directory: () async => Directory('${directory.path}/MQTT'),
+        ),
+      );
+      addTearDown(() async {
+        await tester.runAsync(() async {
+          mqtt.dispose();
+          await mqtt.archive.close();
+        });
+      });
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = size;
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+      await tester.runAsync(() async {
+        for (final id in ['fusion_device_a', 'fusion_device_b']) {
+          mqtt.ingestPayload(testPayload(id));
+          mqtt.ingestPayload(testPayload(id, second: 1, status: 1));
+        }
+        await mqtt.archive.flush();
+      });
+      final previewKey = GlobalKey();
+      await HttpOverrides.runZoned(() async {
+        await tester.binding.setSurfaceSize(size);
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: mobileTheme(
+              ThemeData(
+                brightness: scale == 2 ? Brightness.dark : Brightness.light,
+                colorSchemeSeed: Colors.blue,
+                fontFamily: 'SourceHanSansHWSC',
+              ),
+            ),
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(
+                context,
+              ).copyWith(textScaler: TextScaler.linear(scale)),
+              child: RepaintBoundary(key: previewKey, child: child!),
+            ),
+            home: MobilePositioningPage(mqtt: mqtt, onOpenDrawer: () {}),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.runAsync(() async {
+          await tester.tap(find.byTooltip('从文件导入IMU定位数据'));
+          final deadline = DateTime.now().add(const Duration(seconds: 10));
+          while (find.textContaining('文件解析完成').evaluate().isEmpty &&
+              DateTime.now().isBefore(deadline)) {
+            await Future<void>.delayed(const Duration(milliseconds: 10));
+            await tester.pump();
+          }
+        });
+        ScaffoldMessenger.of(
+          tester.element(find.byType(MobilePositioningPage)),
+        ).removeCurrentSnackBar();
+        await tester.pumpAndSettle();
+        final localCount = tester
+            .widget<MarkerLayer>(find.byType(MarkerLayer))
+            .markers
+            .length;
+        expect(localCount, 6);
+        await tester.tap(find.byTooltip('数据来源'));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.widgetWithText(CheckedPopupMenuItem<String>, 'MQTT 轨迹'),
+        );
+        await tester.pumpAndSettle();
+        expect(
+          tester.widget<Scaffold>(find.byType(Scaffold)).bottomNavigationBar,
+          isNull,
+        );
+        expect(find.byType(Slider), findsNothing);
+        var lines = tester
+            .widget<PolylineLayer>(find.byType(PolylineLayer))
+            .polylines;
+        expect(lines, hasLength(2));
+        expect(lines.first.color, mqtt.layers['fusion_device_a']!.color);
+        expect(lines.last.color, mqtt.layers['fusion_device_b']!.color);
+        expect(lines.first.color, isNot(lines.last.color));
+        expect(
+          tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
+          hasLength(6),
+        );
+
+        await tester.tap(find.byTooltip('查看定位详情'));
+        await tester.pumpAndSettle();
+        expect(find.text('设备：fusion_device_a'), findsOneWidget);
+        expect(find.text('GGA 原文'), findsOneWidget);
+        expect(
+          find.text(mqtt.tracks['fusion_device_a']!.latest!.gga),
+          findsOneWidget,
+        );
+        await tester.tap(find.byTooltip('关闭定位详情'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('图层管理'));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(
+          find.byKey(const ValueKey('layer-visible-fusion_device_a')),
+        );
+        await tester.tap(
+          find.byKey(const ValueKey('layer-visible-fusion_device_a')),
+        );
+        await tester.pumpAndSettle();
+        await tester.runAsync(() async {
+          mqtt.ingestPayload(testPayload('fusion_device_a', second: 2));
+          await mqtt.archive.flush();
+        });
+        await tester.pumpAndSettle();
+        expect(mqtt.tracks['fusion_device_a']!.length, 3);
+        lines = tester
+            .widget<PolylineLayer>(find.byType(PolylineLayer))
+            .polylines;
+        expect(lines, hasLength(1));
+        expect(lines.single.color, mqtt.layers['fusion_device_b']!.color);
+        await tester.ensureVisible(find.text('全部隐藏'));
+        await tester.tap(find.text('全部隐藏'));
+        await tester.pumpAndSettle();
+        expect(
+          tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
+          isEmpty,
+        );
+        expect(find.byTooltip('查看定位详情'), findsNothing);
+        await tester.tap(find.text('全部显示'));
+        await tester.pumpAndSettle();
+        expect(
+          tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
+          hasLength(7),
+        );
+        if (const bool.fromEnvironment('CAPTURE_UI_PREVIEWS')) {
+          await tester.runAsync(() async {
+            final boundary =
+                previewKey.currentContext!.findRenderObject()!
+                    as RenderRepaintBoundary;
+            final image = await boundary.toImage();
+            final bytes = await image.toByteData(
+              format: ui.ImageByteFormat.png,
+            );
+            final file = File(
+              'build/ui-previews/mqtt-layers-${size.width.toInt()}-$scale.png',
+            );
+            await file.parent.create(recursive: true);
+            await file.writeAsBytes(bytes!.buffer.asUint8List());
+            image.dispose();
+          });
+        }
+        await tester.ensureVisible(find.byTooltip('关闭图层管理'));
+        await tester.tap(find.byTooltip('关闭图层管理'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('数据来源'));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.widgetWithText(CheckedPopupMenuItem<String>, '串口 / 离线文件'),
+        );
+        await tester.pumpAndSettle();
+        expect(
+          tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
+          hasLength(localCount),
+        );
+        expect(
+          tester.widget<Scaffold>(find.byType(Scaffold)).bottomNavigationBar,
+          isNotNull,
+        );
+        await tester.tap(find.byTooltip('图层管理'));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(
+          find.byKey(const ValueKey('layer-visible-gga')),
+        );
+        await tester.tap(find.byKey(const ValueKey('layer-visible-gga')));
+        await tester.pumpAndSettle();
+        expect(
+          tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
+          hasLength(1),
+        );
+        await tester.ensureVisible(
+          find.byKey(const ValueKey('layer-visible-pppsol')),
+        );
+        await tester.tap(find.byKey(const ValueKey('layer-visible-pppsol')));
+        await tester.pumpAndSettle();
+        expect(
+          tester.widget<MarkerLayer>(find.byType(MarkerLayer)).markers,
+          isEmpty,
+        );
+        expect(find.byKey(const ValueKey('layer-visible-imu')), findsOneWidget);
+        await tester.ensureVisible(find.byTooltip('关闭图层管理'));
+        await tester.tap(find.byTooltip('关闭图层管理'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('数据来源'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('MQTT 连接设置'));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const ValueKey('mqtt-host')),
+          'https://invalid',
+        );
+        await tester.ensureVisible(find.text('连接并接收'));
+        await tester.tap(find.text('连接并接收'));
+        await tester.pumpAndSettle();
+        expect(find.text('请输入域名或 IP，不含协议前缀和路径'), findsOneWidget);
+        expect(mqtt.isActive, isFalse);
+        await tester.ensureVisible(find.byTooltip('关闭 MQTT 设置'));
+        await tester.tap(find.byTooltip('关闭 MQTT 设置'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('数据来源'));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.widgetWithText(CheckedPopupMenuItem<String>, 'MQTT 轨迹'),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('清除轨迹'));
+        await tester.pumpAndSettle();
+        expect(mqtt.cachedPoints, 0);
+        await tester.tap(find.byTooltip('数据来源'));
+        await tester.pumpAndSettle();
+        final logName = MqttPositionArchive.filenameFor(DateTime.now());
+        await tester.runAsync(() async {
+          await tester.tap(find.text('MQTT 接收日志'));
+          final deadline = DateTime.now().add(const Duration(seconds: 5));
+          while (find.byType(SelectableText).evaluate().isEmpty &&
+              DateTime.now().isBefore(deadline)) {
+            await Future<void>.delayed(const Duration(milliseconds: 10));
+            await tester.pump();
+          }
+        });
+        await tester.pumpAndSettle();
+        await tester.scrollUntilVisible(
+          find.text(logName),
+          120,
+          scrollable: find
+              .descendant(
+                of: find.byType(ListView).last,
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        );
+        await tester.pumpAndSettle();
+        expect(find.text(logName), findsOneWidget);
+        expect(find.text('复制目录路径'), findsOneWidget);
+        expect(find.byTooltip('复制文件路径'), findsOneWidget);
+        if (const bool.fromEnvironment('CAPTURE_UI_PREVIEWS')) {
+          await tester.runAsync(() async {
+            final boundary =
+                previewKey.currentContext!.findRenderObject()
+                    as RenderRepaintBoundary;
+            final image = await boundary.toImage();
+            final bytes = await image.toByteData(
+              format: ui.ImageByteFormat.png,
+            );
+            final file = File(
+              'build/ui-previews/mqtt-logs-${size.width.toInt()}-$scale.png',
+            );
+            await file.parent.create(recursive: true);
+            await file.writeAsBytes(bytes!.buffer.asUint8List());
+            image.dispose();
+          });
+        }
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+        await tester.pumpAndSettle();
+      }, createHttpClient: (_) => _TileHttpClient());
+    });
+  }
 
   for (final (size, scale) in [
     (const Size(320, 640), 1.0),

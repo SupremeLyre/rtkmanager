@@ -42,6 +42,7 @@ dependencies:
   latlong2: ^0.9.1
   screen_retriever: ^0.2.0
   window_manager: ^0.5.1
+  mqtt_client: ^10.11.11
 
 dev_dependencies:
   flutter_test:

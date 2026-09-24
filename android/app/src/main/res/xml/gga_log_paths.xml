@@ -2,6 +2,8 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <external-files-path name="gga_logs" path="Documents/GGA/" />
     <files-path name="gga_logs_internal" path="GGA/" />
+    <external-files-path name="mqtt_logs" path="Documents/MQTT/" />
+    <files-path name="mqtt_logs_internal" path="MQTT/" />
     <external-files-path name="phone_capture" path="Documents/PhoneCapture/" />
     <files-path name="phone_capture_internal" path="PhoneCapture/" />
 </paths>
