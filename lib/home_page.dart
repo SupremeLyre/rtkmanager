@@ -6,6 +6,8 @@ import 'satellite_page.dart';
 import 'imu_batch_decode_page.dart';
 import 'serial_imu_page.dart';
 import 'app_ui.dart';
+import 'accuracy_controller.dart';
+import 'accuracy_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -17,6 +19,13 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   int _selectedIndex = 0;
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  final _accuracy = AccuracyController();
+
+  @override
+  void dispose() {
+    _accuracy.dispose();
+    super.dispose();
+  }
 
   void _onItemTapped(int index) {
     setState(() {
@@ -48,6 +57,7 @@ class _HomePageState extends State<HomePage> {
           AppDestination(Icons.satellite_alt_outlined, '卫星信息', '信号强度与天空分布'),
           AppDestination(Icons.transform, 'IMU 批量解码', '原始数据转 CSV'),
           AppDestination(Icons.show_chart, 'IMU 数据可视化', '六轴 IMU · 磁场实时曲线'),
+          AppDestination(Icons.analytics_outlined, '精度评定', '真值对比、标定与误差时序'),
         ],
       ),
       body: IndexedStack(
@@ -55,13 +65,22 @@ class _HomePageState extends State<HomePage> {
         children: [
           SerialDebugPage(onOpenDrawer: _openDrawer),
           RtkConfigPage(onOpenDrawer: _openDrawer),
-          MobilePositioningPage(onOpenDrawer: _openDrawer),
+          MobilePositioningPage(
+            onOpenDrawer: _openDrawer,
+            accuracy: _accuracy,
+            onShowAccuracy: () => _onItemTapped(6),
+          ),
           SatellitePage(onOpenDrawer: _openDrawer),
           ImuBatchDecodePage(onOpenDrawer: _openDrawer),
           SerialImuPage(
             onOpenDrawer: _openDrawer,
             active: _selectedIndex == 5,
             onOpenSerial: () => setState(() => _selectedIndex = 0),
+          ),
+          AccuracyPage(
+            controller: _accuracy,
+            onOpenDrawer: _openDrawer,
+            onShowPositioning: () => _onItemTapped(2),
           ),
         ],
       ),

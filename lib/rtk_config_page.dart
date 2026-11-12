@@ -345,7 +345,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
         }
       });
 
-      _startForwardingGNGGA();
+      _startForwardingGga();
     } catch (e) {
       // Logged in service
     }
@@ -403,7 +403,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
     return "\$$core*$chkStr\r\n";
   }
 
-  void _startForwardingGNGGA() {
+  void _startForwardingGga() {
     _serialSubscription?.cancel();
 
     if (_ggaSourcePort == "从IMU解析") {
@@ -429,7 +429,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
     }
 
     if (_ggaSerialService == null || !_ggaSerialService!.isOpen) {
-      _addLog("警告: GGA来源串口未打开，无法获取 GNGGA 数据");
+      _addLog("警告: GGA来源串口未打开，无法获取 GGA 数据");
       return;
     }
 
@@ -442,7 +442,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
           List<String> parts = gga.split(',');
           if (parts.length > 1) {
             String timeStr = parts[1];
-            // 只发送整秒，并且避免同一秒内发送多次（比如同时收到 GPGGA 和 GNGGA）
+            // 只发送整秒，避免同一秒内重复上传 GNGGA、GPGGA 或 GBGGA。
             if (timeStr.isNotEmpty &&
                 timeStr != lastSentTime &&
                 (!timeStr.contains('.') ||
@@ -454,7 +454,7 @@ class _RtkConfigPageState extends State<RtkConfigPage> {
         }
       }
     });
-    _addLog("开始监听串口 GNGGA 数据并上传...");
+    _addLog("开始监听串口 GGA 数据（GNGGA/GPGGA/GBGGA），支持二进制/ASCII 混合数据并上传...");
   }
 
   Widget _buildConfigCard() => AppSectionCard(

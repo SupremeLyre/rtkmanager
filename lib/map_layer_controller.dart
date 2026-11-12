@@ -7,12 +7,14 @@ class MapLayerEntry {
     required this.id,
     required this.label,
     required this.color,
+    this.sourcePath,
     this.visible = true,
   });
 
   final String id;
   final String label;
   final Color color;
+  final String? sourcePath;
   final bool visible;
 }
 
@@ -24,13 +26,19 @@ class MapLayerController extends ChangeNotifier {
   MapLayerEntry? operator [](String id) => _layers[id];
   bool isVisible(String id) => _layers[id]?.visible ?? false;
 
-  MapLayerEntry ensureLayer(String id, {String? label, Color? color}) {
+  MapLayerEntry ensureLayer(
+    String id, {
+    String? label,
+    Color? color,
+    String? sourcePath,
+  }) {
     final existing = _layers[id];
     if (existing != null) return existing;
     final entry = MapLayerEntry(
       id: id,
       label: label ?? id,
       color: color ?? _deviceColor(_nextColorIndex++),
+      sourcePath: sourcePath,
     );
     _layers[id] = entry;
     notifyListeners();
@@ -44,6 +52,7 @@ class MapLayerController extends ChangeNotifier {
       id: id,
       label: entry.label,
       color: entry.color,
+      sourcePath: entry.sourcePath,
       visible: visible,
     );
     notifyListeners();
@@ -57,6 +66,7 @@ class MapLayerController extends ChangeNotifier {
         id: entry.id,
         label: entry.label,
         color: entry.color,
+        sourcePath: entry.sourcePath,
         visible: visible,
       );
       changed = true;

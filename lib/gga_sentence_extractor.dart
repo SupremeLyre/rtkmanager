@@ -18,6 +18,15 @@ class GgaSentenceExtractor {
     0x2c, // ,
   ];
   static const int _maxSentenceLength = 1024;
+  static const List<int> _gbggaPrefix = [
+    0x24, // $
+    0x47, // G
+    0x42, // B
+    0x47, // G
+    0x47, // G
+    0x41, // A
+    0x2c, // ,
+  ];
 
   final List<int> _buffer = [];
 
@@ -77,7 +86,9 @@ class GgaSentenceExtractor {
 
   int _findStart([int from = 0]) {
     for (var i = from; i <= _buffer.length - _gnggaPrefix.length; i++) {
-      if (_matchesAt(i, _gnggaPrefix) || _matchesAt(i, _gpggaPrefix)) {
+      if (_matchesAt(i, _gnggaPrefix) ||
+          _matchesAt(i, _gpggaPrefix) ||
+          _matchesAt(i, _gbggaPrefix)) {
         return i;
       }
     }

@@ -21,6 +21,10 @@ import 'package:rtkmanager/positioning_page.dart';
 import 'package:rtkmanager/imu_data_parser.dart';
 import 'package:rtkmanager/mqtt_position_service.dart';
 import 'package:rtkmanager/mqtt_position_archive.dart';
+import 'package:rtkmanager/accuracy_controller.dart';
+import 'package:rtkmanager/accuracy_evaluation.dart';
+import 'package:rtkmanager/accuracy_page.dart';
+import 'package:rtkmanager/truth_data.dart';
 import 'mqtt_position_service_test.dart' show testPayload;
 
 void main() {
@@ -136,6 +140,927 @@ void main() {
       await tester.pumpAndSettle();
     }, createHttpClient: (_) => _TileHttpClient());
   });
+
+  testWidgets('file imports group GNSS and IMU layers by source path', (
+    tester,
+  ) async {
+    final firstImu = File('${directory.path}/imu-a/mixed.log')
+      ..parent.createSync(recursive: true)
+      ..writeAsBytesSync(_imuPositionFrame(1));
+    final secondImu = File('${directory.path}/imu-b/mixed.log')
+      ..parent.createSync(recursive: true)
+      ..writeAsBytesSync(_imuPositionFrame(1));
+    final extraGga = File('${directory.path}/gnss-extra/mixed.log')
+      ..parent.createSync(recursive: true)
+      ..writeAsStringSync(
+        '${input.readAsLinesSync().firstWhere((line) => line.contains(",4,18,"))}\r\n',
+      );
+    await HttpOverrides.runZoned(() async {
+      await tester.binding.setSurfaceSize(const Size(1000, 760));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(home: MobilePositioningPage(onOpenDrawer: () {})),
+      );
+      await tester.pumpAndSettle();
+
+      Future<void> importFiles(List<String> paths, int count) async {
+        final picker = _TestFilePicker.paths(paths);
+        FilePicker.platform = picker;
+        await tester.runAsync(() async {
+          await tester.tap(find.byTooltip('从文件导入IMU定位数据'));
+          final deadline = DateTime.now().add(const Duration(seconds: 10));
+          while (find.textContaining('文件解析完成').evaluate().isEmpty &&
+              DateTime.now().isBefore(deadline)) {
+            await Future<void>.delayed(const Duration(milliseconds: 10));
+            await tester.pump();
+          }
+        });
+        expect(picker.requestedAllowMultiple, isTrue);
+        expect(find.text('文件解析完成，共载入 $count 个轨迹点'), findsOneWidget);
+        ScaffoldMessenger.of(
+          tester.element(find.byType(MobilePositioningPage)),
+        ).removeCurrentSnackBar();
+        await tester.pumpAndSettle();
+      }
+
+      Finder layer(File file, String type) =>
+          find.byKey(ValueKey('layer-visible-file:${file.path}:$type'));
+
+      Future<void> toggle(File file, String type, int visibleCount) async {
+        await tester.ensureVisible(layer(file, type));
+        await tester.tap(layer(file, type));
+        await tester.pumpAndSettle();
+        expect(_mapPoints(tester), hasLength(visibleCount));
+      }
+
+      await importFiles([input.path, firstImu.path, secondImu.path], 8);
+      expect(_mapPoints(tester), hasLength(8));
+      await tester.tap(find.byTooltip('图层管理'));
+      await tester.pumpAndSettle();
+      for (final file in [input, firstImu, secondImu]) {
+        expect(find.text(file.path), findsOneWidget);
+      }
+      expect(layer(input, 'gga'), findsOneWidget);
+      expect(layer(input, 'pppsol'), findsOneWidget);
+      expect(layer(input, 'imu'), findsNothing);
+      for (final file in [firstImu, secondImu]) {
+        expect(layer(file, 'imu'), findsOneWidget);
+        expect(layer(file, 'gga'), findsNothing);
+        expect(layer(file, 'pppsol'), findsNothing);
+      }
+      expect(find.byKey(const ValueKey('layer-visible-gga')), findsNothing);
+      await toggle(firstImu, 'imu', 7);
+      await toggle(secondImu, 'imu', 6);
+      await toggle(input, 'gga', 1);
+      await toggle(input, 'pppsol', 0);
+      await tester.ensureVisible(find.text('全部显示'));
+      await tester.tap(find.text('全部显示'));
+      await tester.pumpAndSettle();
+      expect(_mapPoints(tester), hasLength(8));
+      await tester.ensureVisible(find.byTooltip('关闭图层管理'));
+      await tester.tap(find.byTooltip('关闭图层管理'));
+      await tester.pumpAndSettle();
+
+      // Selecting an imported path again preserves it without duplicate samples.
+      await importFiles([input.path, extraGga.path], 1);
+      expect(_mapPoints(tester), hasLength(9));
+      await tester.tap(find.byTooltip('图层管理'));
+      await tester.pumpAndSettle();
+      for (final file in [input, firstImu, secondImu, extraGga]) {
+        expect(find.text(file.path), findsOneWidget);
+      }
+      await toggle(input, 'gga', 4);
+      await toggle(extraGga, 'gga', 3);
+      await tester.ensureVisible(find.text('全部显示'));
+      await tester.tap(find.text('全部显示'));
+      await tester.pumpAndSettle();
+      expect(_mapPoints(tester), hasLength(9));
+      await tester.ensureVisible(find.byTooltip('关闭图层管理'));
+      await tester.tap(find.byTooltip('关闭图层管理'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('清除轨迹'));
+      await tester.pumpAndSettle();
+      expect(_mapPoints(tester), isEmpty);
+      await tester.tap(find.byTooltip('图层管理'));
+      await tester.pumpAndSettle();
+      for (final file in [input, firstImu, secondImu, extraGga]) {
+        expect(find.text(file.path), findsNothing);
+      }
+      for (final type in ['gga', 'pppsol', 'imu']) {
+        expect(find.byKey(ValueKey('layer-visible-$type')), findsOneWidget);
+      }
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    }, createHttpClient: (_) => _TileHttpClient());
+  });
+
+  testWidgets('imported timeline reviews one source and point type at a time', (
+    tester,
+  ) async {
+    final gga = input.readAsLinesSync().firstWhere(
+      (line) => line.contains(',4,18,'),
+    );
+    final second = File('${directory.path}/other/mixed.log')
+      ..parent.createSync(recursive: true)
+      ..writeAsStringSync(
+        '${gga.replaceFirst('123454.00', '123501.00')}\r\n'
+        '${gga.replaceFirst('123454.00', '123502.00')}\r\n',
+      );
+    final controller = AccuracyController();
+    addTearDown(controller.dispose);
+    await HttpOverrides.runZoned(() async {
+      await tester.binding.setSurfaceSize(const Size(1000, 760));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(home: MobilePositioningPage(accuracy: controller)),
+      );
+      await _importPositionFiles(tester, [input.path, second.path], 8);
+      final firstGga = controller.points
+          .where(
+            (point) =>
+                point.sourcePath == input.path && point.type == PointType.gga,
+          )
+          .toList();
+      final secondGga = controller.points
+          .where((point) => point.sourcePath == second.path)
+          .toList();
+      final ppp = controller.points.singleWhere(
+        (point) => point.type == PointType.pppsol,
+      );
+
+      Future<void> selectLayer(String id) async {
+        await tester.tap(find.byKey(const ValueKey('timeline-layer-selector')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(ValueKey('timeline-layer-$id')));
+        await tester.pumpAndSettle();
+      }
+
+      expect(_mapPoints(tester), hasLength(8));
+      expect(firstGga, hasLength(5));
+      expect(find.text('1 / 5'), findsOneWidget);
+      expect(tester.widget<Slider>(find.byType(Slider)).max, 4);
+      expect(controller.selectedPoint, same(firstGga.first));
+      await tester.tap(find.byTooltip('下一历元'));
+      await tester.pumpAndSettle();
+      expect(controller.selectedPoint, same(firstGga[1]));
+      tester.widget<Slider>(find.byType(Slider)).onChanged!(4);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('下一历元'));
+      await tester.pumpAndSettle();
+      expect(controller.selectedPoint, same(firstGga.last));
+      expect(find.text('5 / 5'), findsOneWidget);
+      await tester.tap(find.byTooltip('上一历元'));
+      await tester.pumpAndSettle();
+      expect(controller.selectedPoint, same(firstGga[3]));
+      await tester.tap(find.byTooltip('回到最新'));
+      await tester.pumpAndSettle();
+      expect(controller.selectedPoint, same(firstGga.last));
+      await tester.tap(find.byTooltip('自动跟随'));
+      await tester.pumpAndSettle();
+      expect(controller.selectedPoint, same(firstGga.last));
+
+      await selectLayer(secondGga.first.layerId);
+      expect(find.text('1 / 2'), findsOneWidget);
+      expect(tester.widget<Slider>(find.byType(Slider)).max, 1);
+      expect(controller.selectedPoint, same(secondGga.first));
+      await tester.tap(find.byTooltip('回到最新'));
+      await tester.pumpAndSettle();
+      expect(controller.selectedPoint, same(secondGga.last));
+      expect(find.text('2 / 2'), findsOneWidget);
+      await selectLayer(ppp.layerId);
+      expect(find.text('1 / 1'), findsOneWidget);
+      expect(tester.widget<Slider>(find.byType(Slider)).onChanged, isNull);
+      expect(controller.selectedPoint, same(ppp));
+      expect(_mapPoints(tester), hasLength(8));
+
+      controller.selectPoint(firstGga[2]);
+      await tester.pumpAndSettle();
+      expect(find.text('3 / 5'), findsOneWidget);
+      expect(tester.widget<Slider>(find.byType(Slider)).max, 4);
+      expect(tester.widget<Slider>(find.byType(Slider)).value, 2);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MobilePositioningPage(accuracy: controller, mobileLayout: true),
+        ),
+      );
+      for (final size in [const Size(375, 720), const Size(720, 375)]) {
+        await tester.binding.setSurfaceSize(size);
+        await tester.pumpAndSettle();
+        await selectLayer(secondGga.first.layerId);
+        expect(find.text('1 / 2'), findsOneWidget);
+        await tester.tap(find.byTooltip('下一历元'));
+        await tester.pumpAndSettle();
+        expect(controller.selectedPoint, same(secondGga.last));
+      }
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    }, createHttpClient: (_) => _TileHttpClient());
+  });
+
+  testWidgets(
+    'timeline focus survives unrelated hiding and falls back on removal',
+    (tester) async {
+      final gga = input.readAsLinesSync().firstWhere(
+        (line) => line.contains(',4,18,'),
+      );
+      final second = File('${directory.path}/second.log')
+        ..writeAsStringSync('$gga\r\n$gga\r\n');
+      final controller = AccuracyController();
+      addTearDown(controller.dispose);
+      await HttpOverrides.runZoned(() async {
+        await tester.binding.setSurfaceSize(const Size(1000, 760));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        await tester.pumpWidget(
+          MaterialApp(home: MobilePositioningPage(accuracy: controller)),
+        );
+        await _importPositionFiles(tester, [input.path, second.path], 8);
+        final selected = controller.points
+            .where(
+              (point) =>
+                  point.sourcePath == input.path && point.type == PointType.gga,
+            )
+            .elementAt(2);
+        controller.selectPoint(selected);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('图层管理'));
+        await tester.pumpAndSettle();
+
+        Future<void> toggle(File file, String type) async {
+          final checkbox = find.byKey(
+            ValueKey('layer-visible-file:${file.path}:$type'),
+          );
+          await tester.ensureVisible(checkbox);
+          await tester.tap(checkbox);
+          await tester.pumpAndSettle();
+        }
+
+        await toggle(second, 'gga');
+        expect(controller.selectedPoint, same(selected));
+        expect(find.text('3 / 5'), findsOneWidget);
+        expect(_mapPoints(tester), hasLength(6));
+        await toggle(input, 'pppsol');
+        expect(controller.selectedPoint, same(selected));
+        expect(find.text('3 / 5'), findsOneWidget);
+        await toggle(input, 'gga');
+        expect(find.byType(Slider), findsNothing);
+        expect(controller.selectedPoint, isNull);
+        await toggle(second, 'gga');
+        expect(controller.selectedPoint!.sourcePath, second.path);
+        expect(tester.widget<Slider>(find.byType(Slider)).max, 1);
+        await toggle(input, 'gga');
+        expect(controller.selectedPoint!.sourcePath, second.path);
+        final removeSecond = find.byKey(
+          ValueKey('layer-remove-file-${second.path}'),
+        );
+        await tester.ensureVisible(removeSecond);
+        await tester.tap(removeSecond);
+        await tester.pumpAndSettle();
+        expect(controller.selectedPoint!.sourcePath, input.path);
+        expect(controller.selectedPoint!.type, PointType.gga);
+        expect(tester.widget<Slider>(find.byType(Slider)).max, 4);
+        expect(_mapPoints(tester), hasLength(5));
+        final removeInput = find.byKey(
+          ValueKey('layer-remove-file-${input.path}'),
+        );
+        await tester.ensureVisible(removeInput);
+        await tester.tap(removeInput);
+        await tester.pumpAndSettle();
+        expect(find.byType(Slider), findsNothing);
+        expect(controller.selectedPoint, isNull);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+        await tester.pumpAndSettle();
+      }, createHttpClient: (_) => _TileHttpClient());
+    },
+  );
+
+  testWidgets('removing a file clears all its layers and permits reimport', (
+    tester,
+  ) async {
+    final imu = File('${directory.path}/imu.bin')
+      ..writeAsBytesSync([..._imuPositionFrame(1), ..._imuPositionFrame(2)]);
+    final original = input.readAsBytesSync();
+    final controller = AccuracyController();
+    addTearDown(controller.dispose);
+    await HttpOverrides.runZoned(() async {
+      await tester.binding.setSurfaceSize(const Size(1000, 760));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(home: MobilePositioningPage(accuracy: controller)),
+      );
+      await tester.pumpAndSettle();
+      await _importPositionFiles(tester, [input.path, imu.path], 8);
+      expect(controller.selectedPoint!.sourcePath, input.path);
+      await tester.tap(find.byTooltip('图层管理'));
+      await tester.pumpAndSettle();
+
+      Future<void> remove(File file) async {
+        final action = find.byKey(ValueKey('layer-remove-file-${file.path}'));
+        await tester.ensureVisible(action);
+        await tester.tap(action);
+        await tester.pumpAndSettle();
+      }
+
+      await remove(input);
+      expect(find.text(input.path), findsNothing);
+      expect(
+        find.byKey(ValueKey('layer-visible-file:${input.path}:gga')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(ValueKey('layer-visible-file:${input.path}:pppsol')),
+        findsNothing,
+      );
+      expect(find.text(imu.path), findsOneWidget);
+      expect(_mapPoints(tester), hasLength(2));
+      expect(controller.points, hasLength(2));
+      expect(
+        controller.points.every((point) => point.sourcePath == imu.path),
+        isTrue,
+      );
+      expect(controller.selectedPoint!.sourcePath, imu.path);
+      expect(input.readAsBytesSync(), original);
+      expect(imu.existsSync(), isTrue);
+      await tester.ensureVisible(find.byTooltip('关闭图层管理'));
+      await tester.tap(find.byTooltip('关闭图层管理'));
+      await tester.pumpAndSettle();
+
+      await _importPositionFiles(tester, [input.path, imu.path], 6);
+      expect(_mapPoints(tester), hasLength(8));
+      expect(
+        controller.points.where((point) => point.sourcePath == imu.path),
+        hasLength(2),
+      );
+      await tester.tap(find.byTooltip('图层管理'));
+      await tester.pumpAndSettle();
+      expect(find.text(input.path), findsOneWidget);
+      await remove(input);
+      await remove(imu);
+      expect(_mapPoints(tester), isEmpty);
+      expect(controller.points, isEmpty);
+      expect(controller.selectedPoint, isNull);
+      expect(find.byType(Slider), findsNothing);
+      expect(find.byTooltip('查看定位详情'), findsNothing);
+      for (final type in ['gga', 'pppsol', 'imu']) {
+        expect(find.byKey(ValueKey('layer-visible-$type')), findsOneWidget);
+      }
+      expect(input.existsSync(), isTrue);
+      expect(imu.existsSync(), isTrue);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    }, createHttpClient: (_) => _TileHttpClient());
+  });
+
+  testWidgets('removing a truth file keeps imported positioning data', (
+    tester,
+  ) async {
+    final truthFile = File('${directory.path}/truth.pos')
+      ..writeAsStringSync('retained source file');
+    final controller = AccuracyController();
+    addTearDown(controller.dispose);
+    controller.setTruthDataset(
+      TruthDataset(
+        sourcePath: truthFile.path,
+        samples: [
+          for (final second in [56, 57])
+            TruthSample(
+              utcTime: DateTime.utc(2026, 9, 18, 12, 34, second),
+              latitude: 30.52,
+              longitude: 114.35,
+              height: 35,
+              velocityEast: 0,
+              velocityNorth: 0,
+              velocityUp: 0,
+            ),
+        ],
+      ),
+    );
+    await HttpOverrides.runZoned(() async {
+      await tester.binding.setSurfaceSize(const Size(1000, 760));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(home: MobilePositioningPage(accuracy: controller)),
+      );
+      await tester.pumpAndSettle();
+      await _importPositionFiles(tester, [input.path], 6);
+      await tester.runAsync(
+        () => controller.evaluate(
+          options: const EvaluationOptions(calibrate: false),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(controller.evaluation!.records, isNotEmpty);
+      expect(_mapPoints(tester), hasLength(6));
+      expect(find.byKey(const ValueKey('truth-trajectory')), findsOneWidget);
+      await tester.tap(find.byTooltip('图层管理'));
+      await tester.pumpAndSettle();
+      final action = find.byKey(
+        ValueKey('layer-remove-file-${truthFile.path}'),
+      );
+      await tester.ensureVisible(action);
+      await tester.tap(action);
+      await tester.pumpAndSettle();
+      expect(controller.truth, isNull);
+      expect(controller.evaluation, isNull);
+      expect(controller.points, hasLength(6));
+      expect(_mapPoints(tester), hasLength(6));
+      expect(find.byKey(const ValueKey('truth-trajectory')), findsNothing);
+      expect(find.text(truthFile.path), findsNothing);
+      expect(find.text(input.path), findsOneWidget);
+      expect(find.byKey(const ValueKey('map-epoch-error')), findsNothing);
+      expect(truthFile.readAsStringSync(), 'retained source file');
+      expect(input.existsSync(), isTrue);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    }, createHttpClient: (_) => _TileHttpClient());
+  });
+
+  testWidgets('failed file import preserves completed files and allows retry', (
+    tester,
+  ) async {
+    final second = File('${directory.path}/imu.bin')
+      ..writeAsBytesSync(_imuPositionFrame(1));
+    var removeOnStart = true;
+    await HttpOverrides.runZoned(() async {
+      await tester.binding.setSurfaceSize(const Size(1000, 760));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MobilePositioningPage(
+            onOpenDrawer: () {},
+            onImportingChanged: (importing) {
+              if (importing && removeOnStart) {
+                removeOnStart = false;
+                second.deleteSync();
+              }
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      Future<void> importAndWait(String message) async {
+        FilePicker.platform = _TestFilePicker.paths([input.path, second.path]);
+        await tester.runAsync(() async {
+          await tester.tap(find.byTooltip('从文件导入IMU定位数据'));
+          final deadline = DateTime.now().add(const Duration(seconds: 10));
+          while (find.textContaining(message).evaluate().isEmpty &&
+              DateTime.now().isBefore(deadline)) {
+            await Future<void>.delayed(const Duration(milliseconds: 10));
+            await tester.pump();
+          }
+        });
+        expect(find.textContaining(message), findsOneWidget);
+        ScaffoldMessenger.of(
+          tester.element(find.byType(MobilePositioningPage)),
+        ).removeCurrentSnackBar();
+        await tester.pumpAndSettle();
+      }
+
+      await importAndWait('文件导入失败');
+      expect(_mapPoints(tester), hasLength(6));
+      await tester.tap(find.byTooltip('图层管理'));
+      await tester.pumpAndSettle();
+      expect(find.text(input.path), findsOneWidget);
+      expect(find.text(second.path), findsNothing);
+      expect(find.text('5 个轨迹点'), findsOneWidget);
+      expect(find.text('1 个轨迹点'), findsOneWidget);
+      await tester.tap(find.byTooltip('关闭图层管理'));
+      await tester.pumpAndSettle();
+
+      second.writeAsBytesSync(_imuPositionFrame(1));
+      await importAndWait('文件解析完成，共载入 1 个轨迹点');
+      expect(_mapPoints(tester), hasLength(7));
+      await tester.tap(find.byTooltip('图层管理'));
+      await tester.pumpAndSettle();
+      expect(find.text(input.path), findsOneWidget);
+      expect(find.text(second.path), findsOneWidget);
+      expect(
+        find.byKey(ValueKey('layer-visible-file:${second.path}:imu')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    }, createHttpClient: (_) => _TileHttpClient());
+  });
+
+  testWidgets('large imported files retain all samples without a point limit', (
+    tester,
+  ) async {
+    final imu = File('${directory.path}/imu.bin')
+      ..writeAsBytesSync(_imuPositionFrame(1));
+    final gga = input.readAsLinesSync().firstWhere(
+      (line) => line.contains(',4,18,'),
+    );
+    input.writeAsStringSync('${List.filled(50001, gga).join('\r\n')}\r\n');
+    FilePicker.platform = _TestFilePicker.paths([imu.path, input.path]);
+    await HttpOverrides.runZoned(() async {
+      await tester.binding.setSurfaceSize(const Size(1000, 760));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(home: MobilePositioningPage(onOpenDrawer: () {})),
+      );
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(find.byTooltip('从文件导入IMU定位数据'));
+        final deadline = DateTime.now().add(const Duration(seconds: 20));
+        while (find.textContaining('文件解析完成').evaluate().isEmpty &&
+            DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+          await tester.pump();
+        }
+      });
+      expect(find.textContaining('文件解析完成'), findsOneWidget);
+      ScaffoldMessenger.of(
+        tester.element(find.byType(MobilePositioningPage)),
+      ).removeCurrentSnackBar();
+      await tester.pumpAndSettle();
+      expect(_mapPoints(tester), hasLength(50002));
+      await tester.tap(find.byTooltip('图层管理'));
+      await tester.pumpAndSettle();
+      expect(find.text(imu.path), findsOneWidget);
+      expect(find.text(input.path), findsOneWidget);
+      expect(find.text('1 个轨迹点'), findsOneWidget);
+      expect(find.text('50001 个轨迹点'), findsOneWidget);
+      await tester.tap(
+        find.byKey(ValueKey('layer-visible-file:${input.path}:gga')),
+      );
+      await tester.pumpAndSettle();
+      expect(_mapPoints(tester), hasLength(1));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    }, createHttpClient: (_) => _TileHttpClient());
+  });
+
+  for (final (size, scale, brightness, previewName) in [
+    (const Size(1000, 760), 1.0, Brightness.light, 'desktop'),
+    (const Size(375, 720), 1.0, Brightness.light, 'mobile'),
+    (const Size(375, 720), 3.0, Brightness.dark, null),
+    (const Size(720, 375), 3.0, Brightness.dark, null),
+  ]) {
+    testWidgets(
+      'map error summary stays compact and opens details at $size / $scale',
+      (tester) async {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = size;
+        addTearDown(tester.view.resetDevicePixelRatio);
+        addTearDown(tester.view.resetPhysicalSize);
+        final line = input.readAsLinesSync().firstWhere(
+          (line) => line.startsWith(r'$PPPSOL'),
+        );
+        input.writeAsStringSync('$line\r\n');
+        final controller = AccuracyController();
+        addTearDown(controller.dispose);
+        controller.setTruthDataset(
+          TruthDataset(
+            sourcePath: '${directory.path}/truth.pos',
+            samples: [
+              TruthSample(
+                utcTime: DateTime.utc(2026, 9, 18, 12, 34, 56),
+                latitude: 30.51999,
+                longitude: 114.35,
+                height: 35,
+                velocityEast: 0,
+                velocityNorth: 0,
+                velocityUp: 0,
+              ),
+            ],
+          ),
+        );
+        final previewKey = GlobalKey();
+        var chartOpened = false;
+        await HttpOverrides.runZoned(() async {
+          await tester.binding.setSurfaceSize(size);
+          addTearDown(() => tester.binding.setSurfaceSize(null));
+          await tester.pumpWidget(
+            MaterialApp(
+              theme: mobileTheme(
+                ThemeData(
+                  brightness: brightness,
+                  colorSchemeSeed: Colors.blue,
+                  fontFamily: 'SourceHanSansHWSC',
+                ),
+              ),
+              builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(context).copyWith(
+                  textScaler: TextScaler.linear(scale),
+                  disableAnimations: true,
+                ),
+                child: RepaintBoundary(key: previewKey, child: child!),
+              ),
+              home: MobilePositioningPage(
+                accuracy: controller,
+                onShowAccuracy: () => chartOpened = true,
+                onOpenDrawer: () {},
+              ),
+            ),
+          );
+          await _importPositionFiles(tester, [input.path], 1);
+          await tester.runAsync(() async {
+            await controller.evaluate(
+              options: const EvaluationOptions(calibrate: false),
+            );
+          });
+          await tester.pumpAndSettle();
+          final summary = find.byKey(const ValueKey('map-epoch-error'));
+          expect(summary, findsOneWidget);
+          expect(find.byKey(const ValueKey('truth-trajectory')), findsNothing);
+          expect(tester.getSize(summary).width, lessThanOrEqualTo(400));
+          if (scale == 1) {
+            expect(
+              tester.getRect(summary).top,
+              greaterThanOrEqualTo(tester.getRect(find.byType(FlutterMap)).top),
+            );
+            expect(tester.getSize(summary).height, lessThanOrEqualTo(100));
+          }
+          expect(
+            tester
+                .widget<Text>(
+                  find.byKey(const ValueKey('map-error-primary-value')),
+                )
+                .textSpan!
+                .toPlainText(),
+            '${controller.selectedError!.rawPosition.horizontal!.toStringAsFixed(3)} m',
+          );
+          expect(
+            find.descendant(of: summary, matching: find.text('原始')),
+            findsOneWidget,
+          );
+          expect(
+            find.descendant(of: summary, matching: find.textContaining('UTC')),
+            findsNothing,
+          );
+          expect(tester.takeException(), isNull);
+          if (previewName != null) {
+            await tester.runAsync(() async {
+              final boundary =
+                  previewKey.currentContext!.findRenderObject()!
+                      as RenderRepaintBoundary;
+              final image = await boundary.toImage();
+              final bytes = await image.toByteData(
+                format: ui.ImageByteFormat.png,
+              );
+              final file = File(
+                'build/ui-previews/accuracy-map-$previewName.png',
+              );
+              await file.parent.create(recursive: true);
+              await file.writeAsBytes(bytes!.buffer.asUint8List());
+              image.dispose();
+            });
+          }
+
+          await tester.tap(
+            find.byKey(const ValueKey('map-error-details-action')),
+          );
+          await tester.pumpAndSettle();
+          final details = find.byKey(const ValueKey('map-error-details'));
+          expect(details, findsOneWidget);
+          expect(find.text('UTC 2026-09-18T12:34:56.000Z'), findsOneWidget);
+          for (final label in ['位置 · m', '速度 · m/s', '姿态 · °']) {
+            expect(find.text(label), findsOneWidget);
+          }
+          expect(tester.takeException(), isNull);
+          await tester.tap(find.byTooltip('关闭误差详情'));
+          await tester.pumpAndSettle();
+          expect(details, findsNothing);
+          await tester.tap(find.byTooltip('查看误差时序'));
+          await tester.pumpAndSettle();
+          expect(chartOpened, isTrue);
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox());
+          await tester.pumpAndSettle();
+        }, createHttpClient: (_) => _TileHttpClient());
+      },
+    );
+  }
+
+  testWidgets(
+    'dashed truth trajectory and error chart selection stay linked to the map',
+    (tester) async {
+      final line = input.readAsLinesSync().firstWhere(
+        (line) => line.startsWith(r'$PPPSOL'),
+      );
+      input.writeAsStringSync(
+        '$line\r\n${line.replaceFirst('123456.00', '123457.00')}\r\n',
+      );
+      final controller = AccuracyController();
+      addTearDown(controller.dispose);
+      controller.setTruthDataset(
+        TruthDataset(
+          sourcePath: '${directory.path}/truth.pos',
+          samples: [
+            for (final second in [56, 57])
+              TruthSample(
+                utcTime: DateTime.utc(2026, 9, 18, 12, 34, second),
+                latitude: 30.52 + (second - 56) * .0001,
+                longitude: 114.35,
+                height: 35,
+                velocityEast: 0,
+                velocityNorth: 0,
+                velocityUp: 0,
+              ),
+          ],
+        ),
+      );
+      await HttpOverrides.runZoned(() async {
+        await tester.binding.setSurfaceSize(const Size(1000, 760));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        var page = 0;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: StatefulBuilder(
+              builder: (context, update) => IndexedStack(
+                index: page,
+                children: [
+                  MobilePositioningPage(
+                    accuracy: controller,
+                    onShowAccuracy: () => update(() => page = 1),
+                  ),
+                  AccuracyPage(
+                    controller: controller,
+                    onShowPositioning: () => update(() => page = 0),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final truthLayer = find.byKey(const ValueKey('truth-trajectory'));
+        Polyline truthLine() =>
+            tester.widget<PolylineLayer>(truthLayer).polylines.single;
+        expect(_mapPoints(tester), isEmpty);
+        expect(truthLayer, findsOneWidget);
+        expect(truthLine().pattern, StrokePattern.dashed(segments: [8, 6]));
+        expect(truthLine().borderStrokeWidth, 0);
+        expect(truthLine().color, const Color(0xFF5D4037));
+        expect(
+          truthLine().points,
+          controller.truth!.samples
+              .map(
+                (sample) => CoordinateConverter.wgs84ToGcj02(
+                  sample.latitude,
+                  sample.longitude,
+                ),
+              )
+              .toList(),
+        );
+        await tester.runAsync(() async {
+          await tester.tap(find.byTooltip('从文件导入IMU定位数据'));
+          final deadline = DateTime.now().add(const Duration(seconds: 10));
+          while (find.textContaining('文件解析完成').evaluate().isEmpty &&
+              DateTime.now().isBefore(deadline)) {
+            await Future<void>.delayed(const Duration(milliseconds: 10));
+            await tester.pump();
+          }
+          await controller.evaluate(
+            options: const EvaluationOptions(calibrate: false),
+          );
+        });
+        ScaffoldMessenger.of(
+          tester.element(find.byType(MobilePositioningPage)),
+        ).removeCurrentSnackBar();
+        await tester.pumpAndSettle();
+        expect(controller.points, hasLength(2));
+        expect(controller.evaluation!.records, hasLength(2));
+        expect(
+          identical(controller.selectedError!.point, controller.points.first),
+          isTrue,
+        );
+        expect(_mapPoints(tester), hasLength(2));
+        expect(truthLayer, findsOneWidget);
+        expect(find.byKey(const ValueKey('map-epoch-error')), findsOneWidget);
+
+        tester.widget<Slider>(find.byType(Slider)).onChanged!(1);
+        await tester.pumpAndSettle();
+        expect(
+          identical(controller.selectedPoint, controller.points.last),
+          isTrue,
+        );
+        expect(controller.selectedError!.utcTime.second, 57);
+        final truth = controller.selectedError!.truth;
+        expect(
+          tester
+              .widget<CircleLayer>(find.byType(CircleLayer))
+              .circles
+              .any(
+                (circle) =>
+                    circle.color == const Color(0xFF5D4037) &&
+                    circle.borderStrokeWidth == 0 &&
+                    circle.point ==
+                        CoordinateConverter.wgs84ToGcj02(
+                          truth.latitude,
+                          truth.longitude,
+                        ),
+              ),
+          isTrue,
+        );
+        await tester.tap(find.byTooltip('精度评定'));
+        await tester.pumpAndSettle();
+        final chart = find.byKey(const ValueKey('accuracy-chart-position'));
+        await tester.ensureVisible(chart);
+        await tester.pumpAndSettle();
+        final rect = tester.getRect(chart);
+        await tester.tapAt(Offset(rect.left + 60, rect.center.dy));
+        await tester.pumpAndSettle();
+        expect(
+          identical(controller.selectedPoint, controller.points.first),
+          isTrue,
+        );
+        await tester.ensureVisible(
+          find.byKey(const ValueKey('accuracy-show-map')),
+        );
+        await tester.tap(find.byKey(const ValueKey('accuracy-show-map')));
+        await tester.pumpAndSettle();
+        expect(tester.widget<Slider>(find.byType(Slider)).value, 0);
+        expect(controller.selectedError!.utcTime.second, 56);
+
+        await tester.tap(find.byTooltip('回到最新'));
+        await tester.pumpAndSettle();
+        expect(
+          identical(controller.selectedPoint, controller.points.last),
+          isTrue,
+        );
+        expect(controller.selectedError!.utcTime.second, 57);
+
+        await tester.tap(find.byTooltip('数据来源'));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.widgetWithText(CheckedPopupMenuItem<String>, 'MQTT 轨迹'),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(Slider), findsNothing);
+        expect(truthLayer, findsNothing);
+        await tester.tap(find.byTooltip('精度评定'));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(
+          find.byKey(const ValueKey('accuracy-show-map')),
+        );
+        await tester.tap(find.byKey(const ValueKey('accuracy-show-map')));
+        await tester.pumpAndSettle();
+        expect(tester.widget<Slider>(find.byType(Slider)).value, 1);
+        expect(truthLayer, findsOneWidget);
+        expect(
+          identical(controller.selectedPoint, controller.points.last),
+          isTrue,
+        );
+
+        await tester.tap(find.byTooltip('图层管理'));
+        await tester.pumpAndSettle();
+        final truthToggle = find.byKey(
+          ValueKey('layer-visible-truth:${controller.truth!.sourcePath}'),
+        );
+        await tester.ensureVisible(truthToggle);
+        await tester.tap(truthToggle);
+        await tester.pumpAndSettle();
+        expect(_mapPoints(tester), hasLength(2));
+        expect(truthLayer, findsNothing);
+        await tester.tap(truthToggle);
+        await tester.pumpAndSettle();
+        expect(truthLayer, findsOneWidget);
+        await tester.ensureVisible(find.byTooltip('关闭图层管理'));
+        await tester.tap(find.byTooltip('关闭图层管理'));
+        await tester.pumpAndSettle();
+
+        controller.setTruthDataset(
+          TruthDataset(
+            sourcePath: '${directory.path}/replacement.pos',
+            samples: [
+              for (final second in [56, 57, 58])
+                TruthSample(
+                  utcTime: DateTime.utc(2026, 9, 18, 12, 34, second),
+                  latitude: 30.53 + (second - 56) * .0001,
+                  longitude: 114.36,
+                  height: 35,
+                ),
+            ],
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(truthLine().points, hasLength(3));
+        expect(
+          truthLine().points.first,
+          CoordinateConverter.wgs84ToGcj02(30.53, 114.36),
+        );
+        expect(truthLine().pattern, StrokePattern.dashed(segments: [8, 6]));
+        expect(truthLine().borderStrokeWidth, 0);
+        expect(_mapPoints(tester), hasLength(2));
+        controller.clearTruth();
+        await tester.pumpAndSettle();
+        expect(truthLayer, findsNothing);
+        expect(_mapPoints(tester), hasLength(2));
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+        await tester.pumpAndSettle();
+      }, createHttpClient: (_) => _TileHttpClient());
+    },
+  );
 
   testWidgets('live IMU visibility and MQTT isolation preserve incoming data', (
     tester,
@@ -350,18 +1275,22 @@ void main() {
         await tester.tap(find.byTooltip('图层管理'));
         await tester.pumpAndSettle();
         await tester.ensureVisible(
-          find.byKey(const ValueKey('layer-visible-gga')),
+          find.byKey(ValueKey('layer-visible-file:${input.path}:gga')),
         );
-        await tester.tap(find.byKey(const ValueKey('layer-visible-gga')));
+        await tester.tap(
+          find.byKey(ValueKey('layer-visible-file:${input.path}:gga')),
+        );
         await tester.pumpAndSettle();
         expect(_mapPoints(tester), hasLength(1));
         await tester.ensureVisible(
-          find.byKey(const ValueKey('layer-visible-pppsol')),
+          find.byKey(ValueKey('layer-visible-file:${input.path}:pppsol')),
         );
-        await tester.tap(find.byKey(const ValueKey('layer-visible-pppsol')));
+        await tester.tap(
+          find.byKey(ValueKey('layer-visible-file:${input.path}:pppsol')),
+        );
         await tester.pumpAndSettle();
         expect(_mapPoints(tester), isEmpty);
-        expect(find.byKey(const ValueKey('layer-visible-imu')), findsOneWidget);
+        expect(find.byKey(const ValueKey('layer-visible-imu')), findsNothing);
         await tester.ensureVisible(find.byTooltip('关闭图层管理'));
         await tester.tap(find.byTooltip('关闭图层管理'));
         await tester.pumpAndSettle();
@@ -704,7 +1633,10 @@ void main() {
           await tester.tap(find.byTooltip('图层管理'));
           await tester.pumpAndSettle();
           for (final type in ['gga', 'pppsol', 'imu']) {
-            expect(find.byKey(ValueKey('layer-visible-$type')), findsOneWidget);
+            expect(
+              find.byKey(ValueKey('layer-visible-file:${input.path}:$type')),
+              findsOneWidget,
+            );
           }
           await tester.tap(find.text('全部隐藏'));
           await tester.pumpAndSettle();
@@ -714,9 +1646,11 @@ void main() {
             ('imu', 'IMU UTC:', 2),
           ]) {
             await tester.ensureVisible(
-              find.byKey(ValueKey('layer-visible-$type')),
+              find.byKey(ValueKey('layer-visible-file:${input.path}:$type')),
             );
-            await tester.tap(find.byKey(ValueKey('layer-visible-$type')));
+            await tester.tap(
+              find.byKey(ValueKey('layer-visible-file:${input.path}:$type')),
+            );
             await tester.pumpAndSettle();
             expect(_mapPoints(tester), hasLength(count));
             await tester.ensureVisible(find.byTooltip('关闭图层管理'));
@@ -1023,6 +1957,28 @@ void main() {
   }
 }
 
+Future<void> _importPositionFiles(
+  WidgetTester tester,
+  List<String> paths,
+  int count,
+) async {
+  FilePicker.platform = _TestFilePicker.paths(paths);
+  await tester.runAsync(() async {
+    await tester.tap(find.byTooltip('从文件导入IMU定位数据'));
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    while (find.textContaining('文件解析完成').evaluate().isEmpty &&
+        DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      await tester.pump();
+    }
+  });
+  expect(find.text('文件解析完成，共载入 $count 个轨迹点'), findsOneWidget);
+  ScaffoldMessenger.of(
+    tester.element(find.byType(MobilePositioningPage)),
+  ).removeCurrentSnackBar();
+  await tester.pumpAndSettle();
+}
+
 List<int> _imuPositionFrame(int second) {
   final utc = ByteData(11)
     ..setUint16(4, 26, Endian.little)
@@ -1055,8 +2011,10 @@ List<int> _imuPositionFrame(int second) {
 }
 
 class _TestFilePicker extends FilePicker {
-  _TestFilePicker(this.path);
-  final String path;
+  _TestFilePicker(String path) : paths = [path];
+  _TestFilePicker.paths(this.paths);
+  final List<String> paths;
+  bool? requestedAllowMultiple;
 
   @override
   Future<FilePickerResult?> pickFiles({
@@ -1072,9 +2030,17 @@ class _TestFilePicker extends FilePicker {
     bool withReadStream = false,
     bool lockParentWindow = false,
     bool readSequential = false,
-  }) async => FilePickerResult([
-    PlatformFile(path: path, name: 'mixed.log', size: File(path).lengthSync()),
-  ]);
+  }) async {
+    requestedAllowMultiple = allowMultiple;
+    return FilePickerResult([
+      for (final path in paths)
+        PlatformFile(
+          path: path,
+          name: 'mixed.log',
+          size: File(path).lengthSync(),
+        ),
+    ]);
+  }
 }
 
 // Return a local transparent tile so layout/interaction tests never need a map server.

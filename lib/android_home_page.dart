@@ -12,6 +12,8 @@ import 'phone_capture_service.dart';
 import 'imu_visualization_page.dart';
 import 'imu_batch_decode_page.dart';
 import 'app_ui.dart';
+import 'accuracy_controller.dart';
+import 'accuracy_page.dart';
 
 class AndroidHomePage extends StatefulWidget {
   const AndroidHomePage({super.key, this.bluetooth, this.logs});
@@ -28,6 +30,7 @@ class _AndroidHomePageState extends State<AndroidHomePage>
   late final GgaLogService _logs;
   final PhoneCaptureService _capture = PhoneCaptureService();
   final _scaffoldKey = GlobalKey<ScaffoldState>();
+  final _accuracy = AccuracyController();
   int _selectedIndex = 0;
   bool _importingFile = false;
   bool _captureVisited = false;
@@ -74,6 +77,7 @@ class _AndroidHomePageState extends State<AndroidHomePage>
           AppDestination(Icons.sensors, '手机数据采集', 'GNSS · IMU · 磁场'),
           AppDestination(Icons.transform, 'IMU 批量解码', '原始数据转 CSV'),
           AppDestination(Icons.show_chart, 'IMU 数据可视化', '六轴 IMU · 磁场实时曲线'),
+          AppDestination(Icons.analytics_outlined, '精度评定', '真值对比、标定与误差时序'),
         ],
       ),
       body: IndexedStack(
@@ -90,6 +94,8 @@ class _AndroidHomePageState extends State<AndroidHomePage>
             mobileLayout: true,
             bluetooth: _bluetooth,
             onOpenDrawer: _openDrawer,
+            accuracy: _accuracy,
+            onShowAccuracy: () => _selectPage(6),
             onImportingChanged: (value) {
               if (mounted && value != _importingFile) {
                 setState(() => _importingFile = value);
@@ -121,6 +127,12 @@ class _AndroidHomePageState extends State<AndroidHomePage>
             onOpenSource: () => _selectPage(3),
             active: _selectedIndex == 5,
           ),
+          AccuracyPage(
+            controller: _accuracy,
+            mobileLayout: true,
+            onOpenDrawer: _openDrawer,
+            onShowPositioning: () => _selectPage(1),
+          ),
         ],
       ),
     ),
@@ -132,6 +144,7 @@ class _AndroidHomePageState extends State<AndroidHomePage>
     if (widget.logs == null) _logs.dispose();
     if (widget.bluetooth == null) _bluetooth.dispose();
     _capture.dispose();
+    _accuracy.dispose();
     super.dispose();
   }
 }

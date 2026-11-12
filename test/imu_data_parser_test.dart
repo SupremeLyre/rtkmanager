@@ -3,6 +3,96 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:rtkmanager/imu_data_parser.dart';
 
 void main() {
+  test('fusion readiness separates horizontal alignment from INS heading', () {
+    for (final state in <int?>[null, 0, 1, 2, 3, 4, 5, 6, 15]) {
+      final sample = ImuData()..fusionState = state;
+      expect(sample.horizontalAttitudeReady, [1, 4, 5].contains(state));
+      expect(sample.headingReady, [4, 5].contains(state));
+    }
+  });
+
+  test('startup stage takes precedence over legacy fusion readiness', () {
+    for (final stage in [0, 1, 2, 3, 4, 255]) {
+      for (final fusion in <int?>[null, 1, 4, 5]) {
+        final sample = ImuData()
+          ..startupStage = stage
+          ..fusionState = fusion;
+        expect(sample.horizontalAttitudeReady, [1, 2, 3].contains(stage));
+        expect(sample.headingReady, stage == 3);
+      }
+    }
+  });
+
+  test(
+    'decodes startup stage and preserves horizontal to heading transition',
+    () {
+      final samples = <ImuData>[];
+      final frames = [
+        ..._frame(1, [0x80, 1, 0x44, 0x85, 1, 2]),
+        ..._frame(2, [0x80, 1, 0x44, 0x85, 1, 3]),
+        ..._frame(3, [0x80, 1, 0x05]),
+        ..._frame(4, [0x80, 1, 0x44, 0x85, 1, 0]),
+      ];
+      final parser = ImuDataParser();
+      for (var offset = 0; offset < frames.length; offset += 3) {
+        parser.parseData(
+          frames.sublist(offset, (offset + 3).clamp(0, frames.length)),
+          samples.add,
+          broadcast: false,
+        );
+      }
+      expect(samples, hasLength(4));
+      expect(samples[0].startupStage, 2);
+      expect(samples[0].fusionState, 4);
+      expect(samples[0].gnssState, 4);
+      expect(samples[0].horizontalAttitudeReady, isTrue);
+      expect(samples[0].headingReady, isFalse);
+      expect(samples[1].startupStage, 3);
+      expect(samples[1].headingReady, isTrue);
+      expect(samples[2].startupStage, isNull);
+      expect(samples[2].fusionState, 5);
+      expect(samples[2].headingReady, isTrue);
+      expect(samples[3].startupStage, 0);
+      expect(samples[3].horizontalAttitudeReady, isFalse);
+      expect(samples[3].headingReady, isFalse);
+    },
+  );
+
+  test('malformed startup TLV lengths are skipped without losing status', () {
+    final samples = <ImuData>[];
+    ImuDataParser().parseData(
+      [
+        ..._frame(1, [0x85, 0, 0x80, 1, 0x41]),
+        ..._frame(2, [0x85, 2, 3, 0, 0x80, 1, 0x44]),
+        ..._frame(3, [0x85, 2, 3]),
+      ],
+      samples.add,
+      broadcast: false,
+    );
+    expect(samples, hasLength(3));
+    expect(samples.every((sample) => sample.startupStage == null), isTrue);
+    expect(samples[0].fusionState, 1);
+    expect(samples[0].horizontalAttitudeReady, isTrue);
+    expect(samples[0].headingReady, isFalse);
+    expect(samples[1].fusionState, 4);
+    expect(samples[1].headingReady, isTrue);
+    expect(samples[2].fusionState, isNull);
+    expect(samples[2].horizontalAttitudeReady, isFalse);
+    expect(samples[2].headingReady, isFalse);
+  });
+
+  test('unknown startup stages are retained but do not certify attitude', () {
+    final samples = <ImuData>[];
+    ImuDataParser().parseData(
+      _frame(1, [0x80, 1, 0x44, 0x85, 1, 99]),
+      samples.add,
+      broadcast: false,
+    );
+    expect(samples.single.startupStage, 99);
+    expect(samples.single.horizontalAttitudeReady, isFalse);
+    expect(samples.single.headingReady, isFalse);
+  });
+
   test('native paired IMU frame produces exactly one six-axis record', () {
     final result = <ImuData>[];
     ImuDataParser().parseData(

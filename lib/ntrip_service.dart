@@ -117,9 +117,9 @@ class NtripService extends ChangeNotifier {
     if (_socket != null && _isConnected) {
       try {
         _socket!.write("$gngga\r\n");
-        addLog("GNGGA 发送成功: $gngga");
+        addLog("GGA 发送成功: $gngga");
       } catch (e) {
-        addLog("GNGGA 发送失败: $e");
+        addLog("GGA 发送失败: $e");
       }
     }
   }

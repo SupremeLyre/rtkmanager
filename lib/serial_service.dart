@@ -86,9 +86,9 @@ class SerialService {
         _port!.config = config;
 
         // Setup raw text decoder
-        _textConversionSink = utf8.decoder.startChunkedConversion(
-          _SafeSink(_textStreamController),
-        );
+        _textConversionSink = const Utf8Decoder(
+          allowMalformed: true,
+        ).startChunkedConversion(_SafeSink(_textStreamController));
 
         _reader = SerialPortReader(_port!);
         _readerSubscription = _reader!.stream.listen(

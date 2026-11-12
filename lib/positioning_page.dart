@@ -18,6 +18,10 @@ import 'trajectory_layer.dart';
 import 'mqtt_position_service.dart';
 import 'mqtt_connection_panel.dart';
 import 'mqtt_archive_panel.dart';
+import 'accuracy_controller.dart';
+import 'accuracy_page.dart';
+import 'accuracy_evaluation.dart';
+import 'truth_data.dart';
 
 export 'position_data.dart';
 
@@ -27,6 +31,8 @@ class MobilePositioningPage extends StatefulWidget {
   final GnssBleService? bluetooth;
   final MqttPositionService? mqtt;
   final ValueChanged<bool>? onImportingChanged;
+  final AccuracyController? accuracy;
+  final VoidCallback? onShowAccuracy;
 
   const MobilePositioningPage({
     super.key,
@@ -35,6 +41,8 @@ class MobilePositioningPage extends StatefulWidget {
     this.bluetooth,
     this.mqtt,
     this.onImportingChanged,
+    this.accuracy,
+    this.onShowAccuracy,
   });
 
   @override
@@ -43,6 +51,7 @@ class MobilePositioningPage extends StatefulWidget {
 
 class _MobilePositioningPageState extends State<MobilePositioningPage> {
   static const int _maxMapZoom = 18;
+  static const Color _truthColor = Color(0xFF5D4037);
   static const ColorFilter _mutedMapColorFilter = ColorFilter.matrix([
     0.15945,
     0.5364,
@@ -88,6 +97,16 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   PositionInfo? _currentInfo;
   ImuData? _currentImuInfo;
   int? _selectedIndex;
+  String? _timelineLayerId;
+  late final AccuracyController _accuracy =
+      widget.accuracy ?? AccuracyController();
+  PositionHistoryPoint? _accuracyShownPoint;
+  TruthDataset? _shownTruth;
+  String? _truthLayerId;
+  bool _syncingAccuracy = false;
+  int _shownLocateRevision = 0;
+  List<LatLng> _truthPoints = const [];
+  List<TrajectoryPoint>? _cachedLocalTrajectory;
 
   // Gaode Map Tile URL (Standard/Vector implementation)
   final String _amapUrl =
@@ -96,13 +115,10 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   @override
   void initState() {
     super.initState();
-    _localLayers.ensureLayer('gga', label: 'GGA', color: Colors.green.shade800);
-    _localLayers.ensureLayer(
-      'pppsol',
-      label: 'PPPSOL',
-      color: Colors.blue.shade900,
-    );
-    _localLayers.ensureLayer('imu', label: 'IMU', color: Colors.cyan.shade800);
+    _ensureLiveLayers();
+    _accuracy.addListener(_handleAccuracyChanged);
+    _localRevision.addListener(_publishLocalPoints);
+    _syncTruthLayer();
     _localLayers.addListener(_handleLocalLayers);
     _mqtt.addListener(_handleMqttUpdate);
     _mqtt.layers.addListener(_handleMqttUpdate);
@@ -130,6 +146,26 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     _imuSubscription = ImuDataParser.imuDataStream.listen(_handleImuData);
   }
 
+  void _ensureLiveLayers() {
+    _localLayers.ensureLayer('gga', label: 'GGA', color: Colors.green.shade800);
+    _localLayers.ensureLayer(
+      'pppsol',
+      label: 'PPPSOL',
+      color: Colors.blue.shade900,
+    );
+    _localLayers.ensureLayer('imu', label: 'IMU', color: Colors.cyan.shade800);
+  }
+
+  void _resetLocalLayers() {
+    _timelineLayerId = null;
+    for (final layer in _localLayers.layers.toList()) {
+      _localLayers.removeLayer(layer.id);
+    }
+    _ensureLiveLayers();
+    _truthLayerId = null;
+    _syncTruthLayer();
+  }
+
   @override
   void dispose() {
     _subscription?.cancel();
@@ -137,6 +173,9 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     _imuSubscription?.cancel();
     _bluetoothSubscription?.cancel();
     widget.bluetooth?.removeListener(_handleBluetoothConnection);
+    _accuracy.removeListener(_handleAccuracyChanged);
+    _localRevision.removeListener(_publishLocalPoints);
+    if (widget.accuracy == null) _accuracy.dispose();
     _localLayers.dispose();
     _localRevision.dispose();
     _mqtt.removeListener(_handleMqttUpdate);
@@ -153,6 +192,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
       _bluetoothConnection = connection;
       if (connection == GnssBleConnection.connected) {
         _points.clear();
+        _resetLocalLayers();
         _localRevision.value++;
         if (!_mqttMode) {
           _currentInfo = null;
@@ -173,6 +213,420 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     return status;
   }
 
+  void _syncTruthLayer() {
+    final truth = _accuracy.truth;
+    final id = truth == null ? null : 'truth:${truth.sourcePath}';
+    if (_truthLayerId != null && _truthLayerId != id) {
+      _localLayers.removeLayer(_truthLayerId!);
+    }
+    _truthLayerId = id;
+    if (truth != null) {
+      _localLayers.ensureLayer(
+        id!,
+        label: '真值',
+        color: _truthColor,
+        sourcePath: truth.sourcePath,
+      );
+    }
+    if (!identical(_shownTruth, truth)) {
+      _cachedLocalTrajectory = null;
+      _shownTruth = truth;
+      _truthPoints = [
+        for (final sample in truth?.samples ?? const <TruthSample>[])
+          CoordinateConverter.wgs84ToGcj02(sample.latitude, sample.longitude),
+      ];
+    }
+  }
+
+  void _selectAccuracyPoint(PositionHistoryPoint? point) {
+    if (_syncingAccuracy) return;
+    _accuracyShownPoint = point;
+    _syncingAccuracy = true;
+    try {
+      _accuracy.selectPoint(point);
+    } finally {
+      _syncingAccuracy = false;
+    }
+  }
+
+  void _publishLocalPoints() {
+    _cachedLocalTrajectory = null;
+    if (_isImporting || _syncingAccuracy) return;
+    _syncingAccuracy = true;
+    try {
+      _accuracy.setPoints(_points);
+    } finally {
+      _syncingAccuracy = false;
+    }
+    if (!_mqttMode) {
+      final index = _selectedIndex;
+      _selectAccuracyPoint(
+        index != null && index < _points.length
+            ? _points[index]
+            : _points.where(_isLocalSelectionPoint).lastOrNull,
+      );
+    }
+  }
+
+  void _handleAccuracyChanged() {
+    if (!mounted || _syncingAccuracy) return;
+    _syncingAccuracy = true;
+    try {
+      setState(() {
+        _syncTruthLayer();
+        final point = _accuracy.selectedPoint;
+        final locateRequested =
+            _shownLocateRevision != _accuracy.locateRevision;
+        if (point != null &&
+            (!identical(point, _accuracyShownPoint) || locateRequested) &&
+            !_isImporting) {
+          final index = _points.indexOf(point);
+          if (index >= 0) {
+            _mqttMode = false;
+            _localLayers.setVisible(point.layerId, true);
+            _selectedIndex = index;
+            _timelineLayerId = point.layerId;
+            _autoCenter = false;
+            _currentInfo = point.posInfo;
+            _currentImuInfo = point.imuData;
+            _mapController.move(point.location, _mapController.camera.zoom);
+          }
+        }
+        _accuracyShownPoint = point;
+        _shownLocateRevision = _accuracy.locateRevision;
+      });
+    } finally {
+      _syncingAccuracy = false;
+    }
+  }
+
+  void _showAccuracy() {
+    _publishLocalPoints();
+    if (widget.onShowAccuracy != null) {
+      widget.onShowAccuracy!();
+    } else {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (context) => AccuracyPage(
+            controller: _accuracy,
+            mobileLayout: widget.mobileLayout,
+            onShowPositioning: () => Navigator.of(context).pop(),
+          ),
+        ),
+      );
+    }
+  }
+
+  void _selectNearestMapPoint(LatLng location) {
+    if (_mqttMode || _isImporting || _points.isEmpty) return;
+    final camera = _mapController.camera;
+    final tap = camera.projectAtZoom(location);
+    var nearestDistance = 24.0 * 24.0;
+    int? nearest;
+    for (var index = 0; index < _points.length; index++) {
+      final point = _points[index];
+      if (!_isLocalPointVisible(point)) continue;
+      final delta = camera.projectAtZoom(point.location) - tap;
+      if (delta.distanceSquared < nearestDistance) {
+        nearestDistance = delta.distanceSquared;
+        nearest = index;
+      }
+    }
+    if (nearest != null) _updateToSelectedEpoch(nearest);
+  }
+
+  Widget _accuracySummary() {
+    final error = _accuracy.selectedError;
+    final calibration = _accuracy.evaluation?.layers
+        .where((layer) => layer.layerId == _accuracy.selectedPoint?.layerId)
+        .firstOrNull
+        ?.calibration;
+    final corrected =
+        _accuracy.options.calibrate && (calibration?.positionCount ?? 0) > 0;
+    final value =
+        (corrected ? error?.correctedPosition : error?.rawPosition)?.horizontal;
+    final colors = Theme.of(context).colorScheme;
+    final largeText = MediaQuery.textScalerOf(context).scale(14) > 22;
+    final summary = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 4,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Text(
+              error == null ? '未匹配真值' : '水平误差',
+              style: Theme.of(
+                context,
+              ).textTheme.labelMedium?.copyWith(color: colors.onSurfaceVariant),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(
+                color: corrected
+                    ? colors.primaryContainer
+                    : colors.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                corrected ? '已修正' : '原始',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: corrected
+                      ? colors.onPrimaryContainer
+                      : colors.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 2),
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text.rich(
+            TextSpan(
+              children: [
+                TextSpan(
+                  text: value?.toStringAsFixed(3) ?? '—',
+                  style: const TextStyle(
+                    fontSize: 25,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                TextSpan(
+                  text: value == null ? '' : ' m',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+            key: const ValueKey('map-error-primary-value'),
+          ),
+        ),
+      ],
+    );
+    final actions = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          key: const ValueKey('map-error-details-action'),
+          tooltip: '查看逐点误差',
+          onPressed: _showAccuracyDetails,
+          icon: const Icon(Icons.more_horiz),
+          constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        ),
+        IconButton(
+          tooltip: '查看误差时序',
+          onPressed: _showAccuracy,
+          icon: const Icon(Icons.show_chart),
+          constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        ),
+      ],
+    );
+    return Material(
+      key: const ValueKey('map-epoch-error'),
+      color: colors.surface.withValues(alpha: .97),
+      elevation: 5,
+      shadowColor: colors.shadow.withValues(alpha: .14),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: colors.outlineVariant.withValues(alpha: .7)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 6, 10),
+        child: largeText
+            ? Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  summary,
+                  Align(alignment: Alignment.centerRight, child: actions),
+                ],
+              )
+            : Row(
+                children: [
+                  Expanded(child: summary),
+                  const SizedBox(width: 12),
+                  actions,
+                ],
+              ),
+      ),
+    );
+  }
+
+  void _showAccuracyDetails() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      constraints: BoxConstraints(
+        maxWidth: 520,
+        maxHeight: MediaQuery.sizeOf(context).height * .85,
+      ),
+      builder: (sheetContext) => AnimatedBuilder(
+        animation: _accuracy,
+        builder: (context, _) {
+          final error = _accuracy.selectedError;
+          final point = _accuracy.selectedPoint;
+          final imu = point?.imuData;
+          final unmatchedReason = point == null
+              ? null
+              : _accuracy.evaluation?.unmatchedPointReasons[_accuracy.points
+                    .indexOf(point)];
+          final calibration = _accuracy.evaluation?.layers
+              .where(
+                (layer) => layer.layerId == _accuracy.selectedPoint?.layerId,
+              )
+              .firstOrNull
+              ?.calibration;
+          final corrected =
+              _accuracy.options.calibrate && calibration?.applied == true;
+          return SingleChildScrollView(
+            key: const ValueKey('map-error-details'),
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '逐点误差',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '关闭误差详情',
+                      onPressed: () => Navigator.pop(sheetContext),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+                if (error == null)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 20),
+                    child: Text(unmatchedReason ?? '该历元未匹配到有效真值'),
+                  )
+                else ...[
+                  Text(
+                    'UTC ${error.utcTime.toIso8601String()}',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  _accuracyDetailMetric(
+                    '位置',
+                    corrected ? error.correctedPosition : error.rawPosition,
+                    'm',
+                    const ['E', 'N', 'U'],
+                  ),
+                  _accuracyDetailMetric(
+                    '速度',
+                    corrected ? error.correctedVelocity : error.rawVelocity,
+                    'm/s',
+                    const ['E', 'N', 'U'],
+                  ),
+                  _accuracyDetailMetric(
+                    '姿态',
+                    corrected ? error.correctedAttitude : error.rawAttitude,
+                    '°',
+                    const ['Roll', 'Pitch', 'Heading'],
+                  ),
+                ],
+                if (imu != null && !imu.headingReady)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      imu.horizontalAttitudeReady ? '水平姿态已就绪，航向对准中。' : '姿态对准中。',
+                    ),
+                  ),
+                if (_accuracy.options.calibrate &&
+                    calibration?.unavailableReason != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Text(
+                      calibration!.unavailableReason!,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                const SizedBox(height: 20),
+                FilledButton.icon(
+                  onPressed: () {
+                    Navigator.pop(sheetContext);
+                    _showAccuracy();
+                  },
+                  icon: const Icon(Icons.show_chart),
+                  label: const Text('查看误差时序'),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _accuracyDetailMetric(
+    String label,
+    ErrorVector values,
+    String unit,
+    List<String> axes,
+  ) {
+    final colors = Theme.of(context).colorScheme;
+    final components = [values.x, values.y, values.z];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: colors.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '$label · $unit',
+                style: Theme.of(context).textTheme.labelLarge,
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 24,
+                runSpacing: 10,
+                children: [
+                  for (var axis = 0; axis < axes.length; axis++)
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          axes[axis],
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: colors.onSurfaceVariant),
+                        ),
+                        Text(
+                          components[axis]?.toStringAsFixed(3) ?? '—',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   void _handleImuData(ImuData data) {
     if (_isImportMode || _isImporting) return;
     if (data.utcYear != null && data.utcYear! > 2000 && data.isUtcWholeSecond) {
@@ -189,6 +643,13 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           isImu: true,
           type: PointType.imu,
           imuData: data,
+          wgs84Latitude: data.lat,
+          wgs84Longitude: data.lon,
+          ellipsoidHeight: data.alt,
+          velocityEast: data.ve,
+          velocityNorth: data.vn,
+          velocityUp: data.vu,
+          utcDateTime: imuUtcDateTime(data),
         );
 
         setState(() {
@@ -249,26 +710,54 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   PositionHistoryPoint? _parseNmeaLine(String line) => parsePositionLine(line);
 
   bool _isLocalPointVisible(PositionHistoryPoint point) =>
-      _localLayers.isVisible(point.type.name);
+      _localLayers.isVisible(point.layerId);
+
+  bool _isLocalSelectionPoint(PositionHistoryPoint point) =>
+      _isLocalPointVisible(point) &&
+      (!_isImportMode || point.layerId == _timelineLayerId);
+
+  void _syncTimelineLayer() {
+    if (!_isImportMode) {
+      _timelineLayerId = null;
+      return;
+    }
+    if (_points.any(
+      (point) =>
+          point.layerId == _timelineLayerId && _isLocalPointVisible(point),
+    )) {
+      return;
+    }
+    _timelineLayerId = _points.where(_isLocalPointVisible).firstOrNull?.layerId;
+  }
 
   void _syncLocalSelection({bool move = false}) {
+    _syncTimelineLayer();
     PositionHistoryPoint? selected;
     for (final point in _points.reversed) {
-      if (_isLocalPointVisible(point)) {
+      if (_isLocalSelectionPoint(point)) {
         selected = point;
         break;
       }
     }
     _currentInfo = selected?.posInfo;
     _currentImuInfo = selected?.imuData;
+    _selectAccuracyPoint(selected);
     if (move && selected != null) {
       _mapController.move(selected.location, _mapController.camera.zoom);
     }
   }
 
   void _handleLocalLayers() {
-    if (!mounted || _mqttMode) return;
+    _cachedLocalTrajectory = null;
+    if (!mounted || _mqttMode || _syncingAccuracy) return;
     setState(() {
+      _syncTimelineLayer();
+      final index = _selectedIndex;
+      if (index != null &&
+          index < _points.length &&
+          _isLocalSelectionPoint(_points[index])) {
+        return;
+      }
       _selectedIndex = null;
       _syncLocalSelection();
     });
@@ -354,6 +843,51 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     );
   }
 
+  void _removeFile(String sourcePath) {
+    if (_isImporting) return;
+    final reviewing = _selectedIndex != null;
+    final selectedBefore = reviewing
+        ? _points[_selectedIndex!]
+        : _points.where(_isLocalSelectionPoint).lastOrNull;
+    PositionHistoryPoint? selected;
+    _syncingAccuracy = true;
+    try {
+      setState(() {
+        _points.removeWhere((point) => point.sourcePath == sourcePath);
+        for (final layer in _localLayers.layers.toList()) {
+          if (layer.sourcePath == sourcePath) {
+            _localLayers.removeLayer(layer.id);
+          }
+        }
+        _accuracy.removeSource(sourcePath);
+        _syncTruthLayer();
+        if (!_points.any((point) => point.sourcePath != null)) {
+          _isImportMode = false;
+          _ensureLiveLayers();
+        }
+        _syncTimelineLayer();
+        selected =
+            selectedBefore != null &&
+                _points.contains(selectedBefore) &&
+                _isLocalSelectionPoint(selectedBefore)
+            ? selectedBefore
+            : _points.where(_isLocalSelectionPoint).lastOrNull;
+        _selectedIndex = reviewing && selected != null
+            ? _points.indexOf(selected!)
+            : null;
+        _currentInfo = selected?.posInfo;
+        _currentImuInfo = selected?.imuData;
+        _localRevision.value++;
+      });
+    } finally {
+      _syncingAccuracy = false;
+    }
+    _selectAccuracyPoint(selected);
+    if (selected != null && !identical(selected, selectedBefore)) {
+      _mapController.move(selected!.location, _mapController.camera.zoom);
+    }
+  }
+
   void _showLayers() {
     showModalBottomSheet<void>(
       context: context,
@@ -397,10 +931,17 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                   ),
                 ],
               ),
-              Text(_mqttMode ? 'MQTT · 按设备配色' : '本地轨迹 · 按定位状态配色'),
+              Text(
+                _mqttMode
+                    ? 'MQTT · 按设备配色'
+                    : _isImportMode
+                    ? '文件轨迹 · 按来源路径分组，按定位状态配色'
+                    : '本地轨迹 · 按定位状态配色',
+              ),
               const Text('取消勾选仅隐藏轨迹，数据仍会保留。'),
               MapLayerPanel(
                 controller: _mqttMode ? _mqtt.layers : _localLayers,
+                onRemoveFile: _mqttMode ? null : _removeFile,
                 pointCounts: _mqttMode
                     ? {
                         for (final entry in _mqtt.tracks.entries)
@@ -408,9 +949,11 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                       }
                     : {
                         for (final layer in _localLayers.layers)
-                          layer.id: _points
-                              .where((p) => p.type.name == layer.id)
-                              .length,
+                          layer.id: layer.id == _truthLayerId
+                              ? _accuracy.truth?.samples.length ?? 0
+                              : _points
+                                    .where((p) => p.layerId == layer.id)
+                                    .length,
                       },
                 selectedId: _mqttMode ? _mqttDeviceId : null,
                 onLocate: _mqttMode
@@ -419,7 +962,9 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                         Navigator.pop(context);
                       }
                     : null,
-                emptyMessage: '等待 MQTT 设备数据，收到有效 GGA 后将自动建立图层。',
+                emptyMessage: _mqttMode
+                    ? '等待 MQTT 设备数据，收到有效 GGA 后将自动建立图层。'
+                    : '所选文件中没有可显示的 GGA、PPPSOL 或 IMU 轨迹。',
               ),
             ],
           ),
@@ -483,8 +1028,15 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         ? 1
         : 2;
     if (nextLevel == _trajectoryDetailLevel) return;
-    setState(() => _trajectoryDetailLevel = nextLevel);
+    setState(() {
+      _trajectoryDetailLevel = nextLevel;
+      _cachedLocalTrajectory = null;
+    });
   }
+
+  List<TrajectoryPoint> get _localTrajectory => _cachedLocalTrajectory ??= [
+    ..._points.where(_isLocalPointVisible).map(_buildTrajectoryPoint),
+  ];
 
   void _toggleGgaAutoFollow() {
     setState(() {
@@ -751,12 +1303,27 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   Future<void> _importFile() async {
     if (widget.bluetooth?.isActive == true || _isImporting) return;
     var importStarted = false;
+    String? readingPath;
     try {
-      FilePickerResult? result = await FilePicker.platform.pickFiles();
+      final result = await FilePicker.platform.pickFiles(allowMultiple: true);
 
-      if (result != null && result.files.single.path != null) {
-        File file = File(result.files.single.path!);
-        final int totalBytes = await file.length();
+      if (result != null) {
+        final importedPaths = {
+          for (final layer in _localLayers.layers)
+            if (layer.id.startsWith('file:') && layer.sourcePath != null)
+              layer.sourcePath!,
+        };
+        final paths = result.files
+            .map((file) => file.path)
+            .whereType<String>()
+            .toSet()
+            .difference(importedPaths);
+        if (paths.isEmpty) return;
+        final files = paths.map(File.new).toList();
+        var totalBytes = 0;
+        for (final file in files) {
+          totalBytes += await file.length();
+        }
         if (!mounted || widget.bluetooth?.isActive == true) return;
         int processedBytes = 0;
         importStarted = true;
@@ -765,7 +1332,13 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         setState(() {
           _mqttMode = false;
           _mqttShownFix = null;
-          _points.clear();
+          if (!_isImportMode) {
+            _timelineLayerId = null;
+            _points.clear();
+            for (final layer in _localLayers.layers.toList()) {
+              if (layer.id != _truthLayerId) _localLayers.removeLayer(layer.id);
+            }
+          }
           _autoCenter = false; // Disable auto center during bulk import
           _currentInfo = null;
           _currentImuInfo = null;
@@ -775,120 +1348,133 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           _importProgress = 0.0;
         });
 
-        final parser = ImuDataParser();
-        final nmeaParser = NmeaParser();
-        List<PositionHistoryPoint> newPoints = [];
-        int? lastSec;
-        bool firstPointFound = false;
+        final newPoints = <PositionHistoryPoint>[];
+        var importedCount = 0;
+        bool firstPointFound = _points.isNotEmpty;
+
+        void addImportedPoint(PositionHistoryPoint point) {
+          _localLayers.ensureLayer(
+            point.layerId,
+            label: point.type.name.toUpperCase(),
+            color: switch (point.type) {
+              PointType.gga => Colors.green.shade800,
+              PointType.pppsol => Colors.blue.shade900,
+              PointType.imu => Colors.cyan.shade800,
+            },
+            sourcePath: point.sourcePath,
+          );
+          importedCount++;
+          if (!firstPointFound) {
+            firstPointFound = true;
+            _points.add(point);
+            setState(() {
+              _selectedIndex = _points.length - 1;
+              _timelineLayerId = point.layerId;
+              _mapController.move(point.location, _mapController.camera.zoom);
+              _currentInfo = point.posInfo;
+              _currentImuInfo = point.imuData;
+              _localRevision.value++;
+            });
+          } else {
+            newPoints.add(point);
+          }
+        }
 
         int lastYieldTime = DateTime.now().millisecondsSinceEpoch;
         int lastProgressUpdate = DateTime.now().millisecondsSinceEpoch;
 
-        // Parse chunk by chunk to avoid out of memory and UI freeze
-        await for (final chunk in file.openRead()) {
-          processedBytes += chunk.length;
-          parser.parseData(chunk, (data) {
-            if (data.utcYear != null &&
-                data.utcYear! > 2000 &&
-                data.utcSec != null &&
-                data.utcSec != lastSec) {
-              if (data.lat != null &&
-                  data.lon != null &&
-                  data.lat! != 0 &&
-                  data.lon! != 0) {
-                lastSec = data.utcSec;
+        // Each file has independent binary/text buffers and IMU sampling state.
+        for (final file in files) {
+          readingPath = file.path;
+          final parser = ImuDataParser();
+          final nmeaParser = NmeaParser();
+          int? lastSec;
+          // Parse chunk by chunk to avoid out of memory and UI freeze.
+          await for (final chunk in file.openRead()) {
+            if (!mounted) return;
+            processedBytes += chunk.length;
+            parser.parseData(chunk, (data) {
+              if (data.utcYear != null &&
+                  data.utcYear! > 2000 &&
+                  data.utcSec != null &&
+                  data.utcSec != lastSec) {
+                if (data.lat != null &&
+                    data.lon != null &&
+                    data.lat! != 0 &&
+                    data.lon! != 0) {
+                  lastSec = data.utcSec;
 
-                final gcj02Pos = CoordinateConverter.wgs84ToGcj02(
-                  data.lat!,
-                  data.lon!,
-                );
+                  final gcj02Pos = CoordinateConverter.wgs84ToGcj02(
+                    data.lat!,
+                    data.lon!,
+                  );
 
-                final int status = _getEffectiveImuStatus(data);
-                final point = PositionHistoryPoint(
-                  location: gcj02Pos,
-                  status: status,
-                  isImu: true,
-                  type: PointType.imu,
-                  imuData: data,
-                );
-
-                if (!firstPointFound) {
-                  firstPointFound = true;
-                  // Immediately add first point and center map
-                  _points.add(point);
-                  if (mounted) {
-                    setState(() {
-                      _selectedIndex = 0;
-                      _mapController.move(
-                        point.location,
-                        _mapController.camera.zoom,
-                      );
-                      _currentImuInfo = data;
-                    });
-                  }
-                } else {
-                  newPoints.add(point);
+                  final int status = _getEffectiveImuStatus(data);
+                  final point = PositionHistoryPoint(
+                    location: gcj02Pos,
+                    status: status,
+                    isImu: true,
+                    type: PointType.imu,
+                    imuData: data,
+                    sourcePath: file.path,
+                    wgs84Latitude: data.lat,
+                    wgs84Longitude: data.lon,
+                    ellipsoidHeight: data.alt,
+                    velocityEast: data.ve,
+                    velocityNorth: data.vn,
+                    velocityUp: data.vu,
+                    utcDateTime: imuUtcDateTime(data),
+                  );
+                  addImportedPoint(point);
                 }
               }
-            }
-          }, broadcast: false);
+            }, broadcast: false);
 
-          nmeaParser.parseChunk(chunk, (line) {
-            var point = _parseNmeaLine(line);
-            if (point != null) {
-              if (!firstPointFound) {
-                firstPointFound = true;
-                _points.add(point);
-                if (mounted) {
-                  setState(() {
-                    _selectedIndex = 0;
-                    _mapController.move(
-                      point.location,
-                      _mapController.camera.zoom,
-                    );
-                    _currentInfo = point.posInfo;
-                  });
-                }
-              } else {
-                newPoints.add(point);
-              }
-            }
-          });
-
-          // Update progress every 100ms to avoid too many setState calls
-          final now = DateTime.now().millisecondsSinceEpoch;
-          if (now - lastProgressUpdate > 100) {
-            setState(() {
-              _importProgress = totalBytes > 0
-                  ? processedBytes / totalBytes
-                  : 0.0;
-              if (newPoints.isNotEmpty) {
-                _points.addAll(newPoints);
-                newPoints.clear();
+            nmeaParser.parseChunk(chunk, (line) {
+              final point = parsePositionLine(line, sourcePath: file.path);
+              if (point != null) {
+                addImportedPoint(point);
               }
             });
-            lastProgressUpdate = now;
-          }
 
-          // Yield control to UI thread every 20ms to prevent freezing
-          if (now - lastYieldTime > 20) {
-            await Future.delayed(Duration.zero);
-            lastYieldTime = now;
-          }
-        }
+            // Update progress every 100ms to avoid too many setState calls
+            final now = DateTime.now().millisecondsSinceEpoch;
+            if (now - lastProgressUpdate > 100) {
+              setState(() {
+                _importProgress = totalBytes > 0
+                    ? processedBytes / totalBytes
+                    : 0.0;
+                if (newPoints.isNotEmpty) {
+                  _points.addAll(newPoints);
+                  newPoints.clear();
+                  _localRevision.value++;
+                }
+              });
+              lastProgressUpdate = now;
+            }
 
-        setState(() {
-          if (newPoints.isNotEmpty) {
+            // Yield control to UI thread every 20ms to prevent freezing
+            if (now - lastYieldTime > 20) {
+              await Future.delayed(Duration.zero);
+              lastYieldTime = now;
+            }
+          }
+          if (!mounted) return;
+          setState(() {
             _points.addAll(newPoints);
             newPoints.clear();
-          }
-          if (_points.length > 50000) {
-            // Keep more points for imported files
-            _points.removeRange(0, _points.length - 50000);
-          }
+            _localRevision.value++;
+          });
+          readingPath = null;
+        }
+
+        if (!mounted) return;
+
+        setState(() {
           _isImporting = false;
           _importProgress = 1.0;
-          final firstVisible = _points.indexWhere(_isLocalPointVisible);
+          _syncTimelineLayer();
+          final firstVisible = _points.indexWhere(_isLocalSelectionPoint);
           _selectedIndex = firstVisible < 0 ? null : firstVisible;
           final selected = firstVisible < 0 ? null : _points[firstVisible];
           _currentInfo = selected?.posInfo;
@@ -901,7 +1487,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('文件解析完成，共载入 ${_points.length} 个轨迹点')),
+            SnackBar(content: Text('文件解析完成，共载入 $importedCount 个轨迹点')),
           );
         }
       }
@@ -909,9 +1495,24 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
       debugPrint('Error importing file: $e');
       if (mounted) {
         setState(() {
+          if (readingPath != null) {
+            _points.removeWhere((point) => point.sourcePath == readingPath);
+            for (final layer in _localLayers.layers.toList()) {
+              if (layer.id.startsWith('file:') &&
+                  layer.sourcePath == readingPath) {
+                _localLayers.removeLayer(layer.id);
+              }
+            }
+            _selectedIndex = null;
+            _syncLocalSelection();
+          }
           _isImporting = false;
           _importProgress = 0.0;
+          _localRevision.value++;
         });
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('文件导入失败：$e')));
       }
     } finally {
       if (importStarted && mounted) widget.onImportingChanged?.call(false);
@@ -923,6 +1524,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
       _selectedIndex = index;
       _autoCenter = false; // Disable auto center when manually reviewing
       final point = _points[index];
+      _timelineLayerId = point.layerId;
       _mapController.move(point.location, _mapController.camera.zoom);
       if (point.isImu) {
         _currentImuInfo = point.imuData;
@@ -932,6 +1534,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         _currentImuInfo = null;
       }
     });
+    _selectAccuracyPoint(_points[index]);
   }
 
   void _clearPoints() {
@@ -941,6 +1544,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     }
     setState(() {
       _points.clear();
+      _resetLocalLayers();
       _localRevision.value++;
       _currentInfo = null;
       _currentImuInfo = null;
@@ -1418,13 +2022,22 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
 
   @override
   Widget build(BuildContext context) {
+    final timelineLayerIds = <String>{};
     List<int> visibleIndices = [];
-    for (int i = 0; i < _points.length; i++) {
-      final p = _points[i];
-      if (_mqttMode || !_isLocalPointVisible(p)) continue;
-      visibleIndices.add(i);
+    if (!_mqttMode) {
+      for (int i = 0; i < _points.length; i++) {
+        final id = _points[i].layerId;
+        if (!_localLayers.isVisible(id)) continue;
+        timelineLayerIds.add(id);
+        if (!_isImportMode || id == _timelineLayerId) visibleIndices.add(i);
+      }
     }
-
+    final timelineLayers = _localLayers.layers
+        .where((layer) => timelineLayerIds.contains(layer.id))
+        .toList();
+    final timelineLayer = timelineLayers
+        .where((layer) => layer.id == _timelineLayerId)
+        .firstOrNull;
     int currentSliderPos = 0;
     if (visibleIndices.isNotEmpty) {
       if (_selectedIndex == null) {
@@ -1440,8 +2053,68 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     final compactToolbar =
         widget.mobileLayout || MediaQuery.sizeOf(context).width < 720;
     final actions = _mobileMapActions();
+    final accuracyAction = IconButton(
+      icon: const Icon(Icons.analytics_outlined),
+      tooltip: '精度评定',
+      onPressed: _isImporting ? null : _showAccuracy,
+    );
     final mqttTracks = _mqtt.tracks.entries.where(
       (entry) => _mqtt.layers.isVisible(entry.key),
+    );
+    final compactTimeline = MediaQuery.sizeOf(context).height < 480;
+    final timelineSelector = PopupMenuButton<String>(
+      key: const ValueKey('timeline-layer-selector'),
+      tooltip: '选择时间轴图层：${timelineLayer?.label} · ${timelineLayer?.sourcePath}',
+      initialValue: _timelineLayerId,
+      onSelected: (id) {
+        final index = _points.indexWhere((point) => point.layerId == id);
+        if (index >= 0) _updateToSelectedEpoch(index);
+      },
+      itemBuilder: (context) => [
+        for (final layer in timelineLayers)
+          PopupMenuItem(
+            key: ValueKey('timeline-layer-${layer.id}'),
+            value: layer.id,
+            child: Text('${layer.label} · ${layer.sourcePath}'),
+          ),
+      ],
+      icon: compactTimeline
+          ? const Icon(Icons.layers_outlined, color: Colors.white)
+          : null,
+      child: compactTimeline
+          ? null
+          : ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 48),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.layers_outlined,
+                      color: Colors.white,
+                      size: 18,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '时间轴 · ${timelineLayer?.label} · ${timelineLayer?.sourcePath}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                    const Icon(
+                      Icons.expand_more,
+                      color: Colors.white,
+                      size: 20,
+                    ),
+                  ],
+                ),
+              ),
+            ),
     );
     return Scaffold(
       appBar: AppPageBar(
@@ -1459,7 +2132,9 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                 ),
               )
             : null,
-        actions: compactToolbar ? [actions.first] : actions,
+        actions: compactToolbar
+            ? [accuracyAction, actions.first]
+            : [...actions, accuracyAction],
       ),
       bottomNavigationBar: widget.mobileLayout || _mqttMode
           ? null
@@ -1474,6 +2149,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
               initialZoom: 17,
               maxZoom: _maxMapZoom.toDouble(),
               onPositionChanged: _handleMapPositionChanged,
+              onTap: (_, location) => _selectNearestMapPoint(location),
             ),
             children: [
               TileLayer(
@@ -1500,6 +2176,22 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                         ),
                   ],
                 ),
+              if (!_mqttMode &&
+                  _truthLayerId != null &&
+                  _localLayers.isVisible(_truthLayerId!) &&
+                  _truthPoints.length >= 2)
+                PolylineLayer(
+                  key: const ValueKey('truth-trajectory'),
+                  polylines: [
+                    Polyline(
+                      points: _truthPoints,
+                      color: _truthColor,
+                      strokeWidth: 2,
+                      borderStrokeWidth: 0,
+                      pattern: StrokePattern.dashed(segments: [8, 6]),
+                    ),
+                  ],
+                ),
               TrajectoryLayer(
                 points: _mqttMode
                     ? [
@@ -1510,10 +2202,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                               color: _mqtt.layers[entry.key]!.color,
                             ),
                       ]
-                    : _points
-                          .where(_isLocalPointVisible)
-                          .map(_buildTrajectoryPoint)
-                          .toList(),
+                    : _localTrajectory,
               ),
               MarkerLayer(
                 markers: [
@@ -1539,6 +2228,18 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
               if (visibleIndices.isNotEmpty)
                 CircleLayer(
                   circles: [
+                    if (!_isImporting &&
+                        _accuracy.selectedError != null &&
+                        _truthLayerId != null &&
+                        _localLayers.isVisible(_truthLayerId!))
+                      CircleMarker(
+                        point: CoordinateConverter.wgs84ToGcj02(
+                          _accuracy.selectedError!.truth.latitude,
+                          _accuracy.selectedError!.truth.longitude,
+                        ),
+                        color: _truthColor,
+                        radius: 5,
+                      ),
                     CircleMarker(
                       point: _points[visibleIndices[currentSliderPos]].location,
                       color: Colors.transparent,
@@ -1552,6 +2253,24 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           ),
           if (widget.mobileLayout || _currentImuInfo == null)
             Positioned(top: 12, left: 12, right: 12, child: _positionSummary()),
+          if (!_mqttMode &&
+              !_isImporting &&
+              _accuracy.evaluation != null &&
+              _accuracy.selectedPoint != null)
+            Positioned(
+              left: 12,
+              right: 12,
+              bottom: _isImportMode && _showTimeline
+                  ? (compactTimeline ? 84 : 140)
+                  : 12,
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 400),
+                  child: _accuracySummary(),
+                ),
+              ),
+            ),
           if (!widget.mobileLayout && _currentImuInfo != null)
             Positioned(
               top: 10,
@@ -1628,109 +2347,125 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
                   color: Colors.black.withValues(alpha: 0.6),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Row(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Expanded(
-                      child: SliderTheme(
-                        data: SliderThemeData(
-                          trackHeight: 2.0,
-                          thumbShape: const RoundSliderThumbShape(
-                            enabledThumbRadius: 6.0,
-                          ),
-                          overlayShape: const RoundSliderOverlayShape(
-                            overlayRadius: 14.0,
+                    if (!compactTimeline) timelineSelector,
+                    Row(
+                      children: [
+                        if (compactTimeline) timelineSelector,
+                        Expanded(
+                          child: SliderTheme(
+                            data: SliderThemeData(
+                              trackHeight: 2.0,
+                              thumbShape: const RoundSliderThumbShape(
+                                enabledThumbRadius: 6.0,
+                              ),
+                              overlayShape: const RoundSliderOverlayShape(
+                                overlayRadius: 14.0,
+                              ),
+                            ),
+                            child: Slider(
+                              value: currentSliderPos.toDouble(),
+                              min: 0,
+                              max: visibleIndices.isEmpty
+                                  ? 1.0
+                                  : (visibleIndices.length - 1).toDouble(),
+                              onChanged: visibleIndices.length <= 1
+                                  ? null
+                                  : (value) {
+                                      _updateToSelectedEpoch(
+                                        visibleIndices[value.toInt()],
+                                      );
+                                    },
+                            ),
                           ),
                         ),
-                        child: Slider(
-                          value: currentSliderPos.toDouble(),
-                          min: 0,
-                          max: visibleIndices.isEmpty
-                              ? 1.0
-                              : (visibleIndices.length - 1).toDouble(),
-                          onChanged: visibleIndices.length <= 1
-                              ? null
-                              : (value) {
-                                  _updateToSelectedEpoch(
-                                    visibleIndices[value.toInt()],
-                                  );
-                                },
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(
-                        Icons.chevron_left,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                      padding: EdgeInsets.zero,
-                      constraints: BoxConstraints(
-                        minWidth: widget.mobileLayout ? 48 : 28,
-                        minHeight: widget.mobileLayout ? 48 : 28,
-                      ),
-                      onPressed: () {
-                        if (visibleIndices.isEmpty) return;
-                        if (currentSliderPos > 0) {
-                          _updateToSelectedEpoch(
-                            visibleIndices[currentSliderPos - 1],
-                          );
-                        }
-                      },
-                      tooltip: '上一历元',
-                    ),
-                    Text(
-                      '${currentSliderPos + 1} / ${visibleIndices.length}',
-                      style: const TextStyle(color: Colors.white, fontSize: 12),
-                    ),
-                    IconButton(
-                      icon: const Icon(
-                        Icons.chevron_right,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                      padding: EdgeInsets.zero,
-                      constraints: BoxConstraints(
-                        minWidth: widget.mobileLayout ? 48 : 28,
-                        minHeight: widget.mobileLayout ? 48 : 28,
-                      ),
-                      onPressed: () {
-                        if (visibleIndices.isEmpty) return;
-                        if (currentSliderPos < visibleIndices.length - 1) {
-                          _updateToSelectedEpoch(
-                            visibleIndices[currentSliderPos + 1],
-                          );
-                        }
-                      },
-                      tooltip: '下一历元',
-                    ),
-                    IconButton(
-                      icon: const Icon(
-                        Icons.skip_next,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                      onPressed: () {
-                        setState(() {
-                          _selectedIndex = null;
-                          if (visibleIndices.isNotEmpty) {
-                            final point = _points[visibleIndices.last];
-                            if (point.isImu) {
-                              _currentImuInfo = point.imuData;
-                              _currentInfo = null;
-                            } else {
-                              _currentInfo = point.posInfo;
-                              _currentImuInfo = null;
-                            }
-                            if (_autoCenter) {
-                              _mapController.move(
-                                point.location,
-                                _mapController.camera.zoom,
+                        IconButton(
+                          icon: const Icon(
+                            Icons.chevron_left,
+                            color: Colors.white,
+                            size: 20,
+                          ),
+                          padding: EdgeInsets.zero,
+                          constraints: BoxConstraints(
+                            minWidth: widget.mobileLayout ? 48 : 28,
+                            minHeight: widget.mobileLayout ? 48 : 28,
+                          ),
+                          onPressed: () {
+                            if (visibleIndices.isEmpty) return;
+                            if (currentSliderPos > 0) {
+                              _updateToSelectedEpoch(
+                                visibleIndices[currentSliderPos - 1],
                               );
                             }
-                          }
-                        });
-                      },
-                      tooltip: '回到最新',
+                          },
+                          tooltip: '上一历元',
+                        ),
+                        Text(
+                          '${currentSliderPos + 1} / ${visibleIndices.length}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(
+                            Icons.chevron_right,
+                            color: Colors.white,
+                            size: 20,
+                          ),
+                          padding: EdgeInsets.zero,
+                          constraints: BoxConstraints(
+                            minWidth: widget.mobileLayout ? 48 : 28,
+                            minHeight: widget.mobileLayout ? 48 : 28,
+                          ),
+                          onPressed: () {
+                            if (visibleIndices.isEmpty) return;
+                            if (currentSliderPos < visibleIndices.length - 1) {
+                              _updateToSelectedEpoch(
+                                visibleIndices[currentSliderPos + 1],
+                              );
+                            }
+                          },
+                          tooltip: '下一历元',
+                        ),
+                        IconButton(
+                          icon: const Icon(
+                            Icons.skip_next,
+                            color: Colors.white,
+                            size: 20,
+                          ),
+                          onPressed: () {
+                            setState(() {
+                              _selectedIndex = null;
+                              if (visibleIndices.isNotEmpty) {
+                                final point = _points[visibleIndices.last];
+                                if (point.isImu) {
+                                  _currentImuInfo = point.imuData;
+                                  _currentInfo = null;
+                                } else {
+                                  _currentInfo = point.posInfo;
+                                  _currentImuInfo = null;
+                                }
+                                if (_autoCenter) {
+                                  _mapController.move(
+                                    point.location,
+                                    _mapController.camera.zoom,
+                                  );
+                                }
+                              }
+                            });
+                            _selectAccuracyPoint(
+                              visibleIndices.isEmpty
+                                  ? null
+                                  : _points[visibleIndices.last],
+                            );
+                          },
+                          tooltip: '回到最新',
+                        ),
+                      ],
                     ),
                   ],
                 ),

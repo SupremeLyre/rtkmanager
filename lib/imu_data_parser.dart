@@ -73,9 +73,25 @@ class ImuData {
   double? vn;
   double? vu;
 
-  // 0x80: 状态
+  // 0x80: 低 4 位为解算状态：1 定位/水平对准（航向无效），4 组合导航，5 纯惯导。
   int? fusionState;
   int? gnssState;
+  // 0x85: 0 标定，1 水平姿态等待 GNSS，2 航向对准，3 INS。
+  int? startupStage;
+
+  // sys_gnss2 imu_proto.h: 0x85 stages 1/2 are horizontal AHRS, 3 is INS.
+  // nav_solver.c emits fusion 1 with yaw=0 during alignment, then 4/5 in INS.
+  bool get horizontalAttitudeReady {
+    if (startupStage != null) {
+      return startupStage == 1 || startupStage == 2 || startupStage == 3;
+    }
+    return fusionState == 1 || fusionState == 4 || fusionState == 5;
+  }
+
+  bool get headingReady {
+    if (startupStage != null) return startupStage == 3;
+    return fusionState == 4 || fusionState == 5;
+  }
 
   bool get hasRawImu =>
       ax != null ||
@@ -328,6 +344,11 @@ class ImuDataParser {
                 int status = bd.getUint8(offset);
                 imuData.fusionState = status & 0x0F;
                 imuData.gnssState = (status >> 4) & 0x0F;
+              }
+              break;
+            case 0x85: // 启动阶段：0 标定，1 水平姿态，2 航向对准，3 INS
+              if (len == 1) {
+                imuData.startupStage = bd.getUint8(offset);
               }
               break;
           }

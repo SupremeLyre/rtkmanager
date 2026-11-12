@@ -3,7 +3,11 @@ import 'package:flutter/foundation.dart';
 import 'package:latlong2/latlong.dart';
 import 'imu_data_parser.dart';
 
-PositionHistoryPoint? parsePositionLine(String line, {bool ggaOnly = false}) {
+PositionHistoryPoint? parsePositionLine(
+  String line, {
+  bool ggaOnly = false,
+  String? sourcePath,
+}) {
   if (RegExp(r'^\$[A-Z]{2}GGA,').hasMatch(line)) {
     try {
       final parts = line.split(',');
@@ -77,6 +81,11 @@ PositionHistoryPoint? parsePositionLine(String line, {bool ggaOnly = false}) {
         isImu: false,
         type: PointType.gga,
         posInfo: newInfo,
+        sourcePath: sourcePath,
+        wgs84Latitude: lat,
+        wgs84Longitude: lon,
+        ellipsoidHeight: _ggaEllipsoidHeight(parts),
+        utcSecondsOfDay: parseUtcSecondsOfDay(rawTime),
       );
     } catch (e) {
       debugPrint('Error parsing GGA: $e');
@@ -94,10 +103,16 @@ PositionHistoryPoint? parsePositionLine(String line, {bool ggaOnly = false}) {
     final int status = int.tryParse(parts[2]) ?? 0;
 
     // Parse Coordinates
-    final double lon = double.tryParse(parts[4]) ?? 0.0;
-    final double lat = double.tryParse(parts[6]) ?? 0.0;
+    final lon = _finiteDouble(parts[4]);
+    final lat = _finiteDouble(parts[6]);
 
-    if (lon == 0 && lat == 0) return null;
+    if (lon == null ||
+        lat == null ||
+        lon.abs() > 180 ||
+        lat.abs() > 90 ||
+        (lon == 0 && lat == 0)) {
+      return null;
+    }
 
     // Convert WGS84 to GCJ-02
     final LatLng gcj02Pos = CoordinateConverter.wgs84ToGcj02(lat, lon);
@@ -158,11 +173,83 @@ PositionHistoryPoint? parsePositionLine(String line, {bool ggaOnly = false}) {
       isImu: false,
       type: PointType.pppsol,
       posInfo: newInfo,
+      sourcePath: sourcePath,
+      wgs84Latitude: lat,
+      wgs84Longitude: lon,
+      ellipsoidHeight: _finiteDouble(parts[8]),
+      velocityEast: _finiteDouble(parts[11]),
+      velocityNorth: _finiteDouble(parts[13]),
+      velocityUp: _finiteDouble(parts[15]),
+      utcDateTime: parseCompactUtc(rawTime),
+      utcSecondsOfDay: rawTime.length >= 14
+          ? parseUtcSecondsOfDay(rawTime.substring(8))
+          : null,
     );
   } catch (e) {
     debugPrint('Error parsing PPPSOL: $e');
     return null;
   }
+}
+
+double? _finiteDouble(String value) {
+  final parsed = double.tryParse(value);
+  return parsed != null && parsed.isFinite ? parsed : null;
+}
+
+double? _ggaEllipsoidHeight(List<String> parts) {
+  final altitude = _finiteDouble(parts[9]);
+  final geoidSeparation = _finiteDouble(parts[11]);
+  return altitude != null &&
+          geoidSeparation != null &&
+          parts[10] == 'M' &&
+          parts[12] == 'M'
+      ? altitude + geoidSeparation
+      : null;
+}
+
+double? parseUtcSecondsOfDay(String value) {
+  if (!RegExp(r'^(\d{6}|\d{2}:\d{2}:\d{2})(\.\d+)?$').hasMatch(value)) {
+    return null;
+  }
+  final compact = value.replaceAll(':', '');
+  final hour = int.parse(compact.substring(0, 2));
+  final minute = int.parse(compact.substring(2, 4));
+  final second = double.parse(compact.substring(4));
+  if (hour > 23 || minute > 59 || second >= 60) return null;
+  return hour * 3600 + minute * 60 + second;
+}
+
+DateTime? parseCompactUtc(String value) {
+  if (!RegExp(r'^\d{14}(\.\d+)?$').hasMatch(value)) return null;
+  final seconds = parseUtcSecondsOfDay(value.substring(8));
+  if (seconds == null) return null;
+  final year = int.parse(value.substring(0, 4));
+  final month = int.parse(value.substring(4, 6));
+  final day = int.parse(value.substring(6, 8));
+  final date = DateTime.utc(year, month, day);
+  if (date.year != year || date.month != month || date.day != day) return null;
+  return date.add(Duration(microseconds: (seconds * 1000000).round()));
+}
+
+DateTime? imuUtcDateTime(ImuData data) {
+  final subsecond = data.utcSubsecondUsec ?? 0;
+  if (subsecond < 0 || subsecond >= 1000000) return null;
+  if (data.utcYear == null ||
+      data.utcMonth == null ||
+      data.utcDay == null ||
+      data.utcHour == null ||
+      data.utcMin == null ||
+      data.utcSec == null) {
+    return null;
+  }
+  final value =
+      '${data.utcYear.toString().padLeft(4, '0')}'
+      '${data.utcMonth.toString().padLeft(2, '0')}'
+      '${data.utcDay.toString().padLeft(2, '0')}'
+      '${data.utcHour.toString().padLeft(2, '0')}'
+      '${data.utcMin.toString().padLeft(2, '0')}'
+      '${data.utcSec.toString().padLeft(2, '0')}';
+  return parseCompactUtc(value)?.add(Duration(microseconds: subsecond));
 }
 
 class PositionInfo {
@@ -255,6 +342,18 @@ class PositionHistoryPoint {
   final PointType type;
   final ImuData? imuData;
   final PositionInfo? posInfo;
+  final String? sourcePath;
+  final double? wgs84Latitude;
+  final double? wgs84Longitude;
+  final double? ellipsoidHeight;
+  final double? velocityEast;
+  final double? velocityNorth;
+  final double? velocityUp;
+  final DateTime? utcDateTime;
+  final double? utcSecondsOfDay;
+
+  String get layerId =>
+      sourcePath == null ? type.name : 'file:$sourcePath:${type.name}';
 
   PositionHistoryPoint({
     required this.location,
@@ -263,5 +362,14 @@ class PositionHistoryPoint {
     this.type = PointType.imu,
     this.imuData,
     this.posInfo,
+    this.sourcePath,
+    this.wgs84Latitude,
+    this.wgs84Longitude,
+    this.ellipsoidHeight,
+    this.velocityEast,
+    this.velocityNorth,
+    this.velocityUp,
+    this.utcDateTime,
+    this.utcSecondsOfDay,
   });
 }
