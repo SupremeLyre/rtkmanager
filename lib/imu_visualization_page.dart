@@ -1,13 +1,16 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import 'imu_data_parser.dart';
+import 'imu_file_charts.dart';
+import 'imu_file_data.dart';
 import 'imu_history.dart';
 import 'app_ui.dart';
 
-/// The same page consumes parsed serial frames or recorded phone frames.
+/// Displays live sensors and independently imported binary recordings.
 class ImuVisualizationPage extends StatefulWidget {
   const ImuVisualizationPage({
     super.key,
@@ -18,6 +21,7 @@ class ImuVisualizationPage extends StatefulWidget {
     this.onOpenSource,
     this.active = true,
     this.sourceControl,
+    this.files,
   });
   final Stream<ImuData> dataStream;
   final String sourceLabel;
@@ -26,12 +30,16 @@ class ImuVisualizationPage extends StatefulWidget {
   final VoidCallback? onOpenSource;
   final bool active;
   final Widget? sourceControl;
+  final ImuFileController? files;
 
   @override
   State<ImuVisualizationPage> createState() => _ImuVisualizationPageState();
 }
 
 class _ImuVisualizationPageState extends State<ImuVisualizationPage> {
+  final _localFiles = ImuFileController();
+  ImuFileController get _files => widget.files ?? _localFiles;
+  bool _importing = false;
   final _history = ImuHistory();
   final _clock = Stopwatch()..start();
   StreamSubscription<ImuData>? _subscription;
@@ -51,7 +59,9 @@ class _ImuVisualizationPageState extends State<ImuVisualizationPage> {
     super.initState();
     _listen();
     _timer = Timer.periodic(const Duration(milliseconds: 100), (_) {
-      if (widget.active && !_paused) _refresh(onlyIfChanged: true);
+      if (widget.active && !_paused && _files.selected == null) {
+        _refresh(onlyIfChanged: true);
+      }
     });
   }
 
@@ -114,13 +124,62 @@ class _ImuVisualizationPageState extends State<ImuVisualizationPage> {
   void dispose() {
     _timer?.cancel();
     unawaited(_subscription?.cancel());
+    _localFiles.dispose();
     super.dispose();
   }
 
+  Future<void> _importData() async {
+    if (_importing) return;
+    try {
+      final picked = await FilePicker.platform.pickFiles(allowMultiple: true);
+      if (!mounted || picked == null) return;
+      final paths = picked.files.map((f) => f.path).whereType<String>().toSet();
+      if (paths.isEmpty) return;
+      setState(() => _importing = true);
+      final failures = <String>[];
+      for (final path in paths) {
+        try {
+          final dataset = await _files.importFile(path);
+          if (!mounted) return;
+          if (dataset.isEmpty) {
+            failures.add('$path：未找到可绘制的 IMU 观测或导航结果');
+          }
+        } catch (error) {
+          if (!mounted) return;
+          failures.add('$path：$error');
+        }
+      }
+      if (mounted && failures.isNotEmpty) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failures.join('\n'))));
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('导入失败：$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
+  }
+
+  void _returnToLive() {
+    _files.select(null);
+    if (!_paused) _refresh();
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: _files,
+    builder: (context, _) => _buildPage(context),
+  );
+
+  Widget _buildPage(BuildContext context) {
+    final file = _files.selected;
     return Scaffold(
-      appBar: AppPageBar(title: 'IMU 数据可视化', onOpenDrawer: widget.onOpenDrawer),
+      appBar: AppPageBar(title: '数据可视化', onOpenDrawer: widget.onOpenDrawer),
       body: LayoutBuilder(
         builder: (context, constraints) {
           final wide =
@@ -140,25 +199,68 @@ class _ImuVisualizationPageState extends State<ImuVisualizationPage> {
                       children: [
                         const MobileIconTile(Icons.show_chart, active: true),
                         Text(
-                          widget.sourceLabel,
+                          file == null ? widget.sourceLabel : '离线文件',
                           style: Theme.of(context).textTheme.titleMedium
                               ?.copyWith(fontWeight: FontWeight.w700),
                         ),
                         MobileStatusChip(
-                          _paused ? '显示已暂停' : _status,
-                          icon: _paused
+                          file != null
+                              ? '离线查看'
+                              : _paused
+                              ? '显示已暂停'
+                              : _status,
+                          icon: file != null
+                              ? Icons.insert_drive_file_outlined
+                              : _paused
                               ? Icons.pause_circle_outline
                               : Icons.sensors,
                         ),
                       ],
                     ),
                     const SizedBox(height: 12),
-                    if (widget.sourceControl != null) ...[
+                    if (_files.datasets.isNotEmpty) ...[
+                      DropdownButtonFormField<String>(
+                        key: ValueKey(
+                          'visualization-source-${file?.sourcePath}',
+                        ),
+                        initialValue: file?.sourcePath ?? '',
+                        isExpanded: true,
+                        decoration: const InputDecoration(labelText: '可视化数据源'),
+                        items: [
+                          const DropdownMenuItem(
+                            value: '',
+                            child: Text('实时数据'),
+                          ),
+                          for (final dataset in _files.datasets)
+                            DropdownMenuItem(
+                              value: dataset.sourcePath,
+                              child: Tooltip(
+                                message: dataset.sourcePath,
+                                child: Text(
+                                  dataset.name,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ),
+                        ],
+                        onChanged: (value) {
+                          if (value == '') {
+                            _returnToLive();
+                          } else if (value != null) {
+                            _files.select(value);
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                    if (file == null && widget.sourceControl != null) ...[
                       widget.sourceControl!,
                       const SizedBox(height: 12),
                     ],
                     Text(
-                      '$_basis · 最近 $_seconds 秒 · 已接收 $_count 帧',
+                      file == null
+                          ? '$_basis · 最近 $_seconds 秒 · 已接收 $_count 帧'
+                          : '${file.timeBasis} · 已解析 ${file.frameCount} 帧',
                       style: Theme.of(context).textTheme.bodyMedium,
                     ),
                     const SizedBox(height: 12),
@@ -168,74 +270,104 @@ class _ImuVisualizationPageState extends State<ImuVisualizationPage> {
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         OutlinedButton.icon(
-                          key: const ValueKey('imu-pause'),
-                          onPressed: () {
-                            setState(() => _paused = !_paused);
-                            if (!_paused) _refresh();
-                          },
-                          icon: Icon(_paused ? Icons.play_arrow : Icons.pause),
-                          label: Text(_paused ? '继续显示' : '暂停显示'),
+                          key: const ValueKey('visualization-import'),
+                          onPressed: _importing ? null : _importData,
+                          icon: Icon(
+                            _importing
+                                ? Icons.hourglass_top
+                                : Icons.file_open_outlined,
+                          ),
+                          label: Text(_importing ? '正在导入…' : '导入数据'),
                         ),
-                        OutlinedButton.icon(
-                          key: const ValueKey('imu-clear'),
-                          onPressed: () {
-                            _history.clear();
-                            _refresh();
-                          },
-                          icon: const Icon(Icons.delete_sweep_outlined),
-                          label: const Text('清除曲线'),
-                        ),
-                        for (final seconds in [5, 10, 30])
-                          ChoiceChip(
-                            label: Text('$seconds 秒'),
-                            selected: _seconds == seconds,
-                            onSelected: (_) {
-                              setState(() => _seconds = seconds);
+                        if (file != null)
+                          OutlinedButton.icon(
+                            onPressed: _returnToLive,
+                            icon: const Icon(Icons.sensors),
+                            label: const Text('返回实时'),
+                          ),
+                        if (file == null) ...[
+                          OutlinedButton.icon(
+                            key: const ValueKey('imu-pause'),
+                            onPressed: () {
+                              setState(() => _paused = !_paused);
                               if (!_paused) _refresh();
                             },
+                            icon: Icon(
+                              _paused ? Icons.play_arrow : Icons.pause,
+                            ),
+                            label: Text(_paused ? '继续显示' : '暂停显示'),
                           ),
-                        if (widget.onOpenSource != null)
-                          TextButton.icon(
-                            onPressed: widget.onOpenSource,
-                            icon: const Icon(Icons.settings_input_component),
-                            label: const Text('打开数据源'),
+                          OutlinedButton.icon(
+                            key: const ValueKey('imu-clear'),
+                            onPressed: () {
+                              _history.clear();
+                              _refresh();
+                            },
+                            icon: const Icon(Icons.delete_sweep_outlined),
+                            label: const Text('清除曲线'),
                           ),
+                          for (final seconds in [5, 10, 30])
+                            ChoiceChip(
+                              label: Text('$seconds 秒'),
+                              selected: _seconds == seconds,
+                              onSelected: (_) {
+                                setState(() => _seconds = seconds);
+                                if (!_paused) _refresh();
+                              },
+                            ),
+                          if (widget.onOpenSource != null)
+                            TextButton.icon(
+                              onPressed: widget.onOpenSource,
+                              icon: const Icon(Icons.settings_input_component),
+                              label: const Text('打开数据源'),
+                            ),
+                        ],
                       ],
                     ),
                     const SizedBox(height: 8),
+                    if (file != null) ...[
+                      SelectableText(file.sourcePath),
+                      const SizedBox(height: 8),
+                    ],
                     Text(
-                      '暂停与清除仅影响图表，采集和文件保存继续运行。',
+                      file == null
+                          ? '可导入 IMU 二进制记录查看离线曲线。暂停与清除仅影响图表，采集和文件保存继续运行。'
+                          : '显示文件内的原始观测和导航结果；缺失或未对准的分量留空。定位结果页导入的二进制文件会自动同步。',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ],
                 ),
               ),
               const SizedBox(height: 12),
-              if (_count == 0) ...[
-                MobileEmptyState(
-                  icon: Icons.monitor_heart_outlined,
-                  title: '等待 IMU 数据',
-                  message: widget.emptyMessage,
-                ),
-                const SizedBox(height: 12),
-              ],
-              if (wide)
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    for (final kind in ImuVector.values) ...[
-                      if (kind != ImuVector.values.first)
-                        const SizedBox(width: 12),
-                      Expanded(child: _chart(kind)),
-                    ],
-                  ],
-                )
-              else
-                for (final kind in ImuVector.values)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: _chart(kind),
+              if (file != null)
+                ImuFileCharts(key: ValueKey(file), dataset: file)
+              else ...[
+                if (_count == 0) ...[
+                  MobileEmptyState(
+                    icon: Icons.monitor_heart_outlined,
+                    title: '等待 IMU 数据',
+                    message: widget.emptyMessage,
                   ),
+                  const SizedBox(height: 12),
+                ],
+                if (wide)
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final kind in ImuVector.values) ...[
+                        if (kind != ImuVector.values.first)
+                          const SizedBox(width: 12),
+                        Expanded(child: _chart(kind)),
+                      ],
+                    ],
+                  )
+                else
+                  for (final kind in ImuVector.values)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: _chart(kind),
+                    ),
+              ],
             ],
           );
         },

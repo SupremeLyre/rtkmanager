@@ -14,6 +14,7 @@ import 'imu_batch_decode_page.dart';
 import 'app_ui.dart';
 import 'accuracy_controller.dart';
 import 'accuracy_page.dart';
+import 'imu_file_data.dart';
 
 class AndroidHomePage extends StatefulWidget {
   const AndroidHomePage({super.key, this.bluetooth, this.logs});
@@ -29,8 +30,9 @@ class _AndroidHomePageState extends State<AndroidHomePage>
   late final GnssBleService _bluetooth = widget.bluetooth ?? GnssBleService();
   late final GgaLogService _logs;
   final PhoneCaptureService _capture = PhoneCaptureService();
-  final _scaffoldKey = GlobalKey<ScaffoldState>();
+  final _drawerKey = GlobalKey<AppDrawerShellState>();
   final _accuracy = AccuracyController();
+  final _visualization = ImuFileController();
   int _selectedIndex = 0;
   bool _importingFile = false;
   bool _captureVisited = false;
@@ -48,7 +50,7 @@ class _AndroidHomePageState extends State<AndroidHomePage>
     if (state != AppLifecycleState.resumed) unawaited(_logs.flush());
   }
 
-  void _openDrawer() => _scaffoldKey.currentState?.openDrawer();
+  void _openDrawer() => _drawerKey.currentState?.openDrawer();
 
   void _selectPage(int index) {
     if (index == 3 || index == 5) _capture.listen();
@@ -58,14 +60,14 @@ class _AndroidHomePageState extends State<AndroidHomePage>
       if (index == 3) _captureVisited = true;
       if (index == 4) _decodeVisited = true;
     });
-    _scaffoldKey.currentState?.closeDrawer();
+    _drawerKey.currentState?.closeDrawer();
   }
 
   @override
   Widget build(BuildContext context) => Theme(
     data: mobileTheme(Theme.of(context)),
-    child: Scaffold(
-      key: _scaffoldKey,
+    child: AppDrawerShell(
+      key: _drawerKey,
       drawer: AppNavigationDrawer(
         selectedIndex: _selectedIndex,
         onSelected: _selectPage,
@@ -76,7 +78,7 @@ class _AndroidHomePageState extends State<AndroidHomePage>
           AppDestination(Icons.folder_open_outlined, '日志存储', 'GGA 文件与分享'),
           AppDestination(Icons.sensors, '手机数据采集', 'GNSS · IMU · 磁场'),
           AppDestination(Icons.transform, 'IMU 批量解码', '原始数据转 CSV'),
-          AppDestination(Icons.show_chart, 'IMU 数据可视化', '六轴 IMU · 磁场实时曲线'),
+          AppDestination(Icons.show_chart, '数据可视化', '实时与离线观测 · 姿态与速度'),
           AppDestination(Icons.analytics_outlined, '精度评定', '真值对比、标定与误差时序'),
         ],
       ),
@@ -96,6 +98,8 @@ class _AndroidHomePageState extends State<AndroidHomePage>
             onOpenDrawer: _openDrawer,
             accuracy: _accuracy,
             onShowAccuracy: () => _selectPage(6),
+            visualization: _visualization,
+            onShowVisualization: () => _selectPage(5),
             onImportingChanged: (value) {
               if (mounted && value != _importingFile) {
                 setState(() => _importingFile = value);
@@ -120,6 +124,7 @@ class _AndroidHomePageState extends State<AndroidHomePage>
           else
             const SizedBox.shrink(),
           ImuVisualizationPage(
+            files: _visualization,
             dataStream: _capture.imuDataStream,
             sourceLabel: '手机传感器',
             emptyMessage: '在“手机数据采集”中同时检测加速度计与陀螺仪，勾选 IMU 并开始采集后查看曲线。磁场按独立频率显示。',
@@ -145,6 +150,7 @@ class _AndroidHomePageState extends State<AndroidHomePage>
     if (widget.bluetooth == null) _bluetooth.dispose();
     _capture.dispose();
     _accuracy.dispose();
+    _visualization.dispose();
     super.dispose();
   }
 }

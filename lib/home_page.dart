@@ -8,6 +8,7 @@ import 'serial_imu_page.dart';
 import 'app_ui.dart';
 import 'accuracy_controller.dart';
 import 'accuracy_page.dart';
+import 'imu_file_data.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -18,12 +19,15 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   int _selectedIndex = 0;
-  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  final GlobalKey<AppDrawerShellState> _drawerKey =
+      GlobalKey<AppDrawerShellState>();
   final _accuracy = AccuracyController();
+  final _visualization = ImuFileController();
 
   @override
   void dispose() {
     _accuracy.dispose();
+    _visualization.dispose();
     super.dispose();
   }
 
@@ -31,17 +35,17 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _selectedIndex = index;
     });
-    _scaffoldKey.currentState?.closeDrawer();
+    _drawerKey.currentState?.closeDrawer();
   }
 
   void _openDrawer() {
-    _scaffoldKey.currentState?.openDrawer();
+    _drawerKey.currentState?.openDrawer();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      key: _scaffoldKey,
+    return AppDrawerShell(
+      key: _drawerKey,
       drawer: AppNavigationDrawer(
         selectedIndex: _selectedIndex,
         onSelected: _onItemTapped,
@@ -56,7 +60,7 @@ class _HomePageState extends State<HomePage> {
           AppDestination(Icons.map_outlined, '定位结果', '实时位置与轨迹回放'),
           AppDestination(Icons.satellite_alt_outlined, '卫星信息', '信号强度与天空分布'),
           AppDestination(Icons.transform, 'IMU 批量解码', '原始数据转 CSV'),
-          AppDestination(Icons.show_chart, 'IMU 数据可视化', '六轴 IMU · 磁场实时曲线'),
+          AppDestination(Icons.show_chart, '数据可视化', '实时与离线观测 · 姿态与速度'),
           AppDestination(Icons.analytics_outlined, '精度评定', '真值对比、标定与误差时序'),
         ],
       ),
@@ -69,10 +73,13 @@ class _HomePageState extends State<HomePage> {
             onOpenDrawer: _openDrawer,
             accuracy: _accuracy,
             onShowAccuracy: () => _onItemTapped(6),
+            visualization: _visualization,
+            onShowVisualization: () => _onItemTapped(5),
           ),
           SatellitePage(onOpenDrawer: _openDrawer),
           ImuBatchDecodePage(onOpenDrawer: _openDrawer),
           SerialImuPage(
+            files: _visualization,
             onOpenDrawer: _openDrawer,
             active: _selectedIndex == 5,
             onOpenSerial: () => setState(() => _selectedIndex = 0),

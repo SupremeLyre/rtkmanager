@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'imu_visualization_page.dart';
 import 'serial_service.dart';
+import 'imu_file_data.dart';
 
 class SerialImuPage extends StatefulWidget {
   const SerialImuPage({
@@ -8,10 +9,12 @@ class SerialImuPage extends StatefulWidget {
     required this.onOpenDrawer,
     required this.onOpenSerial,
     required this.active,
+    this.files,
   });
   final VoidCallback onOpenDrawer;
   final VoidCallback onOpenSerial;
   final bool active;
+  final ImuFileController? files;
   @override
   State<SerialImuPage> createState() => _SerialImuPageState();
 }
@@ -29,6 +32,7 @@ class _SerialImuPageState extends State<SerialImuPage> {
               ? ports.first
               : SerialService();
           return ImuVisualizationPage(
+            files: widget.files,
             dataStream: source.imuDataStream,
             sourceLabel: '串口 · ${source.currentPortName ?? '等待连接'}',
             emptyMessage: '先在“串口调试助手”中连接输出 IMU 二进制帧的设备。连接后自动解析，选择串口即可查看三轴曲线。',

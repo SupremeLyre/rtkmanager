@@ -14,6 +14,70 @@ ImuData sample(int nanos) => ImuData()
 
 void main() {
   final now = DateTime.utc(2026, 9, 19);
+  test('waits for synchronized UTC before adding live samples', () {
+    final history = ImuHistory();
+    ImuData utcSample(int year, int usec) => sample(0)
+      ..gpsWeek = null
+      ..gpsTowNanos = null
+      ..utcYear = year
+      ..utcMonth = 1
+      ..utcDay = 1
+      ..utcHour = 0
+      ..utcMin = 0
+      ..utcSec = 0
+      ..utcUsec = usec;
+    history.add(utcSample(2000, 0), arrivalUs: 0, now: now);
+    history.add(utcSample(2000, 10000), arrivalUs: 10000, now: now);
+    expect(history.count, 0);
+    expect(history.latestTimeUs, isNull);
+    expect(history.points(ImuVector.acceleration, 10), isEmpty);
+    history.add(utcSample(2026, 0), arrivalUs: 20000, now: now);
+    history.add(utcSample(2026, 10000), arrivalUs: 30000, now: now);
+    expect(history.count, 2);
+    expect(history.timeBasis, 'UTC 采样时间');
+    expect(history.points(ImuVector.acceleration, 10), hasLength(2));
+    expect(history.rate(ImuVector.acceleration, now), closeTo(100, .001));
+  });
+
+  test('live GPS samples take priority over placeholder UTC', () {
+    final history = ImuHistory();
+    history.add(
+      sample(0)
+        ..utcYear = 2000
+        ..utcMonth = 1
+        ..utcDay = 1
+        ..utcHour = 0
+        ..utcMin = 0
+        ..utcSec = 0,
+      arrivalUs: 0,
+      now: now,
+    );
+    expect(history.count, 1);
+    expect(history.timeBasis, 'GPS 采样时间');
+  });
+
+  test('invalid GPS does not make placeholder UTC usable', () {
+    final history = ImuHistory();
+    for (final (week, nanos) in [
+      (-1, 0),
+      (65536, 0),
+      (2400, -1),
+      (2400, 604800000000000),
+    ]) {
+      history.add(
+        sample(nanos)
+          ..gpsWeek = week
+          ..utcYear = 2000
+          ..utcMonth = 1
+          ..utcDay = 1,
+        arrivalUs: 0,
+        now: now,
+      );
+    }
+    expect(history.count, 0);
+    expect(history.points(ImuVector.acceleration, 10), isEmpty);
+  });
+
   test('paired six-axis frames keep zero values and hardware timing', () {
     final history = ImuHistory();
     for (var i = 0; i < 100; i++) {

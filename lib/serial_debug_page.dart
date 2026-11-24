@@ -206,94 +206,106 @@ class _SerialDebugPageState extends State<SerialDebugPage>
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppPageBar(
-      title: '串口调试助手',
-      onOpenDrawer: widget.onOpenDrawer,
-      actions: [
-        IconButton(
-          onPressed: _addTab,
-          icon: const Icon(Icons.add),
-          tooltip: '新建串口连接',
-        ),
-        IconButton(
-          onPressed: _toggleGlobalSaving,
-          icon: Icon(_isGlobalSaving ? Icons.save_as : Icons.save_alt),
-          tooltip: _isGlobalSaving ? '停止所有保存' : '保存所有数据',
-        ),
-        const SizedBox(width: 8),
-      ],
-      bottom: TabBar(
-        controller: _tabController,
-        isScrollable: true,
-        tabAlignment: TabAlignment.start,
-        tabs: _tabs
-            .asMap()
-            .entries
-            .map(
-              (entry) => Tab(
-                height: 48,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.usb, size: 18),
-                    const SizedBox(width: 8),
-                    Text(entry.value.title),
-                    if (entry.value.isClosable)
-                      IconButton(
-                        onPressed: () => _removeTab(entry.key),
-                        icon: const Icon(Icons.close, size: 18),
-                        tooltip: '关闭${entry.value.title}',
-                      ),
-                  ],
-                ),
+  Widget build(BuildContext context) {
+    final tabBar = TabBar(
+      controller: _tabController,
+      isScrollable: true,
+      tabAlignment: TabAlignment.start,
+      tabs: _tabs
+          .asMap()
+          .entries
+          .map(
+            (entry) => Tab(
+              height: 48,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.usb, size: 18),
+                  const SizedBox(width: 8),
+                  Text(entry.value.title),
+                  if (entry.value.isClosable)
+                    IconButton(
+                      onPressed: () => _removeTab(entry.key),
+                      icon: const Icon(Icons.close, size: 18),
+                      tooltip: '关闭${entry.value.title}',
+                    ),
+                ],
               ),
-            )
-            .toList(),
+            ),
+          )
+          .toList(),
+    );
+    return Scaffold(
+      appBar: AppPageBar(
+        title: '串口调试助手',
+        onOpenDrawer: widget.onOpenDrawer,
+        actions: [
+          IconButton(
+            onPressed: _addTab,
+            icon: const Icon(Icons.add),
+            tooltip: '新建串口连接',
+          ),
+          IconButton(
+            onPressed: _toggleGlobalSaving,
+            icon: Icon(_isGlobalSaving ? Icons.save_as : Icons.save_alt),
+            tooltip: _isGlobalSaving ? '停止所有保存' : '保存所有数据',
+          ),
+          const SizedBox(width: 8),
+        ],
+        bottom: PreferredSize(
+          preferredSize: tabBar.preferredSize,
+          child: DrawerSwipeBlocker(
+            enabled: _tabs.length > 1,
+            child: tabBar,
+          ),
+        ),
       ),
-    ),
-    body: Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-          child: Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              MobileStatusChip(
-                '接收 ${_formatBytes(_rxDataRate)}/s',
-                icon: Icons.south_west,
-              ),
-              MobileStatusChip(
-                '发送 ${_formatBytes(_txDataRate)}/s',
-                icon: Icons.north_east,
-              ),
-              MobileStatusChip(
-                _ntripService.isConnected ? 'NTRIP 已连接' : 'NTRIP 未连接',
-                icon: Icons.settings_input_antenna,
-                emphasized: _ntripService.isConnected,
-              ),
-            ],
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                MobileStatusChip(
+                  '接收 ${_formatBytes(_rxDataRate)}/s',
+                  icon: Icons.south_west,
+                ),
+                MobileStatusChip(
+                  '发送 ${_formatBytes(_txDataRate)}/s',
+                  icon: Icons.north_east,
+                ),
+                MobileStatusChip(
+                  _ntripService.isConnected ? 'NTRIP 已连接' : 'NTRIP 未连接',
+                  icon: Icons.settings_input_antenna,
+                  emphasized: _ntripService.isConnected,
+                ),
+              ],
+            ),
           ),
-        ),
-        Expanded(
-          child: TabBarView(
-            controller: _tabController,
-            children: _tabs
-                .map(
-                  (tab) => SerialDebugContent(
-                    key: tab.key,
-                    serialService: tab.service,
-                    globalSaving: _isGlobalSaving,
-                  ),
-                )
-                .toList(),
+          Expanded(
+            child: DrawerSwipeBlocker(
+              enabled: _tabs.length > 1 && _tabController.index > 0,
+              child: TabBarView(
+                controller: _tabController,
+                children: _tabs
+                    .map(
+                      (tab) => SerialDebugContent(
+                        key: tab.key,
+                        serialService: tab.service,
+                        globalSaving: _isGlobalSaving,
+                      ),
+                    )
+                    .toList(),
+              ),
+            ),
           ),
-        ),
-      ],
-    ),
-  );
+        ],
+      ),
+    );
+  }
 }
 
 class SerialTabItem {
@@ -642,59 +654,63 @@ class SerialDebugContentState extends State<SerialDebugContent>
   }
 
   Widget _buildLogArea() {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
-        borderRadius: BorderRadius.circular(16),
-        color: Colors.black87,
-      ),
-      child: Stack(
-        children: [
-          if (_receivedData.isEmpty && _incompleteLine.isEmpty)
-            const Center(
-              child: Wrap(
-                alignment: WrapAlignment.center,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                spacing: 12,
-                children: [
-                  Icon(Icons.terminal, color: Colors.white70, size: 32),
-                  Text('等待串口数据', style: TextStyle(color: Colors.white70)),
-                ],
+    return DrawerSwipeBlocker(
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          border: Border.all(
+            color: Theme.of(context).colorScheme.outlineVariant,
+          ),
+          borderRadius: BorderRadius.circular(16),
+          color: Colors.black87,
+        ),
+        child: Stack(
+          children: [
+            if (_receivedData.isEmpty && _incompleteLine.isEmpty)
+              const Center(
+                child: Wrap(
+                  alignment: WrapAlignment.center,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 12,
+                  children: [
+                    Icon(Icons.terminal, color: Colors.white70, size: 32),
+                    Text('等待串口数据', style: TextStyle(color: Colors.white70)),
+                  ],
+                ),
+              ),
+            SelectionArea(
+              child: ListView.builder(
+                controller: _scrollController,
+                itemCount: _receivedData.length + 1,
+                itemBuilder: (context, index) {
+                  String text;
+                  if (index < _receivedData.length) {
+                    text = _receivedData[index];
+                  } else {
+                    text = _incompleteLine;
+                  }
+                  return Text(
+                    text,
+                    style: const TextStyle(
+                      color: Colors.greenAccent,
+                      fontFamily: 'SourceCodePro',
+                      fontFamilyFallback: ['SourceHanSansHWSC'],
+                    ),
+                  );
+                },
               ),
             ),
-          SelectionArea(
-            child: ListView.builder(
-              controller: _scrollController,
-              itemCount: _receivedData.length + 1,
-              itemBuilder: (context, index) {
-                String text;
-                if (index < _receivedData.length) {
-                  text = _receivedData[index];
-                } else {
-                  text = _incompleteLine;
-                }
-                return Text(
-                  text,
-                  style: const TextStyle(
-                    color: Colors.greenAccent,
-                    fontFamily: 'SourceCodePro',
-                    fontFamilyFallback: ['SourceHanSansHWSC'],
-                  ),
-                );
-              },
+            Positioned(
+              right: 8,
+              top: 8,
+              child: IconButton(
+                icon: const Icon(Icons.cleaning_services, color: Colors.white70),
+                onPressed: _clearReceivedData,
+                tooltip: '清空接收区',
+              ),
             ),
-          ),
-          Positioned(
-            right: 8,
-            top: 8,
-            child: IconButton(
-              icon: const Icon(Icons.cleaning_services, color: Colors.white70),
-              onPressed: _clearReceivedData,
-              tooltip: '清空接收区',
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

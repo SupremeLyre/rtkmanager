@@ -8,6 +8,8 @@ import 'package:latlong2/latlong.dart';
 import 'package:file_picker/file_picker.dart';
 import 'serial_service.dart';
 import 'imu_data_parser.dart';
+import 'imu_file_data.dart';
+import 'imu_visualization_page.dart';
 import 'gga_sentence_extractor.dart';
 import 'gnss_ble_service.dart';
 import 'app_ui.dart';
@@ -33,6 +35,8 @@ class MobilePositioningPage extends StatefulWidget {
   final ValueChanged<bool>? onImportingChanged;
   final AccuracyController? accuracy;
   final VoidCallback? onShowAccuracy;
+  final ImuFileController? visualization;
+  final VoidCallback? onShowVisualization;
 
   const MobilePositioningPage({
     super.key,
@@ -43,6 +47,8 @@ class MobilePositioningPage extends StatefulWidget {
     this.onImportingChanged,
     this.accuracy,
     this.onShowAccuracy,
+    this.visualization,
+    this.onShowVisualization,
   });
 
   @override
@@ -77,6 +83,9 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
 
   final MapController _mapController = MapController();
   final List<PositionHistoryPoint> _points = [];
+  late final ImuFileController _visualization =
+      widget.visualization ?? ImuFileController();
+  final Set<String> _visualizationPaths = {};
   StreamSubscription<String>? _subscription;
   StreamSubscription<Uint8List>? _ggaSubscription;
   StreamSubscription<ImuData>? _imuSubscription;
@@ -116,6 +125,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
   void initState() {
     super.initState();
     _ensureLiveLayers();
+    _visualization.addListener(_handleVisualizationChanged);
     _accuracy.addListener(_handleAccuracyChanged);
     _localRevision.addListener(_publishLocalPoints);
     _syncTruthLayer();
@@ -171,6 +181,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     _subscription?.cancel();
     _ggaSubscription?.cancel();
     _imuSubscription?.cancel();
+    _visualization.removeListener(_handleVisualizationChanged);
+    if (widget.visualization == null) _visualization.dispose();
     _bluetoothSubscription?.cancel();
     widget.bluetooth?.removeListener(_handleBluetoothConnection);
     _accuracy.removeListener(_handleAccuracyChanged);
@@ -191,6 +203,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     setState(() {
       _bluetoothConnection = connection;
       if (connection == GnssBleConnection.connected) {
+        _clearImportedVisualization();
         _points.clear();
         _resetLocalLayers();
         _localRevision.value++;
@@ -311,6 +324,54 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
             controller: _accuracy,
             mobileLayout: widget.mobileLayout,
             onShowPositioning: () => Navigator.of(context).pop(),
+          ),
+        ),
+      );
+    }
+  }
+
+  void _handleVisualizationChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _clearImportedVisualization() {
+    for (final path in _visualizationPaths) {
+      _visualization.remove(path);
+    }
+    _visualizationPaths.clear();
+  }
+
+  List<ImuFileDataset> get _importedNavigationFiles => _visualization.datasets
+      .where(
+        (dataset) =>
+            _visualizationPaths.contains(dataset.sourcePath) &&
+            (dataset.series[ImuFileVector.attitude]!.isNotEmpty ||
+                dataset.series[ImuFileVector.velocity]!.isNotEmpty),
+      )
+      .toList(growable: false);
+
+  void _showVisualization() {
+    final datasets = _importedNavigationFiles;
+    if (datasets.isEmpty) return;
+    final selectedPoint = _selectedIndex == null
+        ? _points.where(_isLocalSelectionPoint).lastOrNull
+        : _points[_selectedIndex!];
+    final path = datasets
+        .where((dataset) => dataset.sourcePath == selectedPoint?.sourcePath)
+        .firstOrNull
+        ?.sourcePath;
+    _visualization.select(path ?? datasets.last.sourcePath);
+    if (widget.onShowVisualization != null) {
+      widget.onShowVisualization!();
+    } else {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (context) => ImuVisualizationPage(
+            dataStream: const Stream<ImuData>.empty(),
+            sourceLabel: '离线文件',
+            emptyMessage: '导入离线 IMU 文件以查看姿态与速度时序。',
+            onOpenDrawer: () => Navigator.of(context).pop(),
+            files: _visualization,
           ),
         ),
       );
@@ -853,6 +914,9 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
     _syncingAccuracy = true;
     try {
       setState(() {
+        if (_visualizationPaths.remove(sourcePath)) {
+          _visualization.remove(sourcePath);
+        }
         _points.removeWhere((point) => point.sourcePath == sourcePath);
         for (final layer in _localLayers.layers.toList()) {
           if (layer.sourcePath == sourcePath) {
@@ -861,7 +925,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         }
         _accuracy.removeSource(sourcePath);
         _syncTruthLayer();
-        if (!_points.any((point) => point.sourcePath != null)) {
+        if (!_points.any((point) => point.sourcePath != null) &&
+            _visualizationPaths.isEmpty) {
           _isImportMode = false;
           _ensureLiveLayers();
         }
@@ -1312,6 +1377,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           for (final layer in _localLayers.layers)
             if (layer.id.startsWith('file:') && layer.sourcePath != null)
               layer.sourcePath!,
+          ..._visualizationPaths,
         };
         final paths = result.files
             .map((file) => file.path)
@@ -1333,6 +1399,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           _mqttMode = false;
           _mqttShownFix = null;
           if (!_isImportMode) {
+            _clearImportedVisualization();
             _timelineLayerId = null;
             _points.clear();
             for (final layer in _localLayers.layers.toList()) {
@@ -1387,6 +1454,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         for (final file in files) {
           readingPath = file.path;
           final parser = ImuDataParser();
+          final visualizationBuilder = ImuFileBuilder(file.path);
           final nmeaParser = NmeaParser();
           int? lastSec;
           // Parse chunk by chunk to avoid out of memory and UI freeze.
@@ -1394,6 +1462,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
             if (!mounted) return;
             processedBytes += chunk.length;
             parser.parseData(chunk, (data) {
+              visualizationBuilder.add(data);
               if (data.utcYear != null &&
                   data.utcYear! > 2000 &&
                   data.utcSec != null &&
@@ -1461,6 +1530,17 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           }
           if (!mounted) return;
           setState(() {
+            final dataset = visualizationBuilder.build();
+            if (!dataset.isEmpty) {
+              _visualizationPaths.add(file.path);
+              _visualization.add(dataset);
+              _localLayers.ensureLayer(
+                'file:${file.path}:imu',
+                label: 'IMU',
+                color: Colors.cyan.shade800,
+                sourcePath: file.path,
+              );
+            }
             _points.addAll(newPoints);
             newPoints.clear();
             _localRevision.value++;
@@ -1543,6 +1623,7 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
       return;
     }
     setState(() {
+      _clearImportedVisualization();
       _points.clear();
       _resetLocalLayers();
       _localRevision.value++;
@@ -1596,6 +1677,8 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           _showMqttSettings();
         } else if (value == 'logs') {
           _showMqttLogs();
+        } else if (value == 'visualization') {
+          _showVisualization();
         } else {
           _setMqttMode(value == 'mqtt');
         }
@@ -1614,6 +1697,10 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
         const PopupMenuDivider(),
         const PopupMenuItem(value: 'settings', child: Text('MQTT 连接设置')),
         const PopupMenuItem(value: 'logs', child: Text('MQTT 接收日志')),
+        if (!_mqttMode && _importedNavigationFiles.isNotEmpty) ...[
+          const PopupMenuDivider(),
+          const PopupMenuItem(value: 'visualization', child: Text('姿态与速度时序')),
+        ],
       ],
     ),
     IconButton(
@@ -2141,115 +2228,118 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
           : _buildLegendBar(),
       body: Stack(
         children: [
-          FlutterMap(
-            mapController: _mapController,
-            options: MapOptions(
-              // Default center (Wuhan as per example coords)
-              initialCenter: const LatLng(30.52845181, 114.35696878),
-              initialZoom: 17,
-              maxZoom: _maxMapZoom.toDouble(),
-              onPositionChanged: _handleMapPositionChanged,
-              onTap: (_, location) => _selectNearestMapPoint(location),
-            ),
-            children: [
-              TileLayer(
-                urlTemplate: _amapUrl,
-                userAgentPackageName: 'com.example.rtkmanager',
-                subdomains: const ['01', '02', '03', '04'], // usually wprd01-04
-                maxNativeZoom: _maxMapZoom,
-                tileBuilder: (_, tileWidget, _) => ColorFiltered(
-                  colorFilter: _mutedMapColorFilter,
-                  child: tileWidget,
-                ),
+          DrawerSwipeBlocker(
+            child: FlutterMap(
+              mapController: _mapController,
+              options: MapOptions(
+                // Default center (Wuhan as per example coords)
+                initialCenter: const LatLng(30.52845181, 114.35696878),
+                initialZoom: 17,
+                maxZoom: _maxMapZoom.toDouble(),
+                onPositionChanged: _handleMapPositionChanged,
+                onTap: (_, location) => _selectNearestMapPoint(location),
               ),
-              if (_mqttMode)
-                PolylineLayer(
-                  polylines: [
-                    for (final entry in mqttTracks)
-                      if (entry.value.length > 1)
-                        Polyline(
-                          points: entry.value.points
-                              .map((fix) => fix.position.location)
-                              .toList(),
-                          color: _mqtt.layers[entry.key]!.color,
-                          strokeWidth: 2,
-                        ),
-                  ],
+              children: [
+                TileLayer(
+                  urlTemplate: _amapUrl,
+                  userAgentPackageName: 'com.example.rtkmanager',
+                  subdomains: const ['01', '02', '03', '04'], // usually wprd01-04
+                  maxNativeZoom: _maxMapZoom,
+                  tileBuilder: (_, tileWidget, _) => ColorFiltered(
+                    colorFilter: _mutedMapColorFilter,
+                    child: tileWidget,
+                  ),
                 ),
-              if (!_mqttMode &&
-                  _truthLayerId != null &&
-                  _localLayers.isVisible(_truthLayerId!) &&
-                  _truthPoints.length >= 2)
-                PolylineLayer(
-                  key: const ValueKey('truth-trajectory'),
-                  polylines: [
-                    Polyline(
-                      points: _truthPoints,
-                      color: _truthColor,
-                      strokeWidth: 2,
-                      borderStrokeWidth: 0,
-                      pattern: StrokePattern.dashed(segments: [8, 6]),
-                    ),
-                  ],
+                if (_mqttMode)
+                  PolylineLayer(
+                    polylines: [
+                      for (final entry in mqttTracks)
+                        if (entry.value.length > 1)
+                          Polyline(
+                            points: entry.value.points
+                                .map((fix) => fix.position.location)
+                                .toList(),
+                            color: _mqtt.layers[entry.key]!.color,
+                            strokeWidth: 2,
+                          ),
+                    ],
+                  ),
+                if (!_mqttMode &&
+                    _truthLayerId != null &&
+                    _localLayers.isVisible(_truthLayerId!) &&
+                    _truthPoints.length >= 2)
+                  PolylineLayer(
+                    key: const ValueKey('truth-trajectory'),
+                    polylines: [
+                      Polyline(
+                        points: _truthPoints,
+                        color: _truthColor,
+                        strokeWidth: 2,
+                        borderStrokeWidth: 0,
+                        pattern: StrokePattern.dashed(segments: [8, 6]),
+                      ),
+                    ],
+                  ),
+                TrajectoryLayer(
+                  points: _mqttMode
+                      ? [
+                          for (final entry in mqttTracks)
+                            for (final fix in entry.value.points)
+                              _buildTrajectoryPoint(
+                                fix.position,
+                                color: _mqtt.layers[entry.key]!.color,
+                              ),
+                        ]
+                      : _localTrajectory,
                 ),
-              TrajectoryLayer(
-                points: _mqttMode
-                    ? [
-                        for (final entry in mqttTracks)
-                          for (final fix in entry.value.points)
-                            _buildTrajectoryPoint(
-                              fix.position,
-                              color: _mqtt.layers[entry.key]!.color,
-                            ),
-                      ]
-                    : _localTrajectory,
-              ),
-              MarkerLayer(
-                markers: [
-                  if (_mqttMode)
-                    for (final entry in mqttTracks)
-                      if (entry.value.latest != null)
-                        Marker(
-                          point: entry.value.latest!.position.location,
-                          width: 48,
-                          height: 48,
-                          child: IconButton(
-                            tooltip: entry.key,
-                            onPressed: () => _locateMqttDevice(entry.key),
-                            icon: Icon(
-                              Icons.location_on,
-                              color: _mqtt.layers[entry.key]!.color,
-                              size: 28,
+                MarkerLayer(
+                  markers: [
+                    if (_mqttMode)
+                      for (final entry in mqttTracks)
+                        if (entry.value.latest != null)
+                          Marker(
+                            point: entry.value.latest!.position.location,
+                            width: 48,
+                            height: 48,
+                            child: IconButton(
+                              tooltip: entry.key,
+                              onPressed: () => _locateMqttDevice(entry.key),
+                              icon: Icon(
+                                Icons.location_on,
+                                color: _mqtt.layers[entry.key]!.color,
+                                size: 28,
+                              ),
                             ),
                           ),
-                        ),
-                ],
-              ),
-              if (visibleIndices.isNotEmpty)
-                CircleLayer(
-                  circles: [
-                    if (!_isImporting &&
-                        _accuracy.selectedError != null &&
-                        _truthLayerId != null &&
-                        _localLayers.isVisible(_truthLayerId!))
-                      CircleMarker(
-                        point: CoordinateConverter.wgs84ToGcj02(
-                          _accuracy.selectedError!.truth.latitude,
-                          _accuracy.selectedError!.truth.longitude,
-                        ),
-                        color: _truthColor,
-                        radius: 5,
-                      ),
-                    CircleMarker(
-                      point: _points[visibleIndices[currentSliderPos]].location,
-                      color: Colors.transparent,
-                      borderStrokeWidth: 2,
-                      borderColor: Colors.yellow.shade700,
-                      radius: 7,
-                    ),
                   ],
                 ),
-            ],
+                if (visibleIndices.isNotEmpty)
+                  CircleLayer(
+                    circles: [
+                      if (!_isImporting &&
+                          _accuracy.selectedError != null &&
+                          _truthLayerId != null &&
+                          _localLayers.isVisible(_truthLayerId!))
+                        CircleMarker(
+                          point: CoordinateConverter.wgs84ToGcj02(
+                            _accuracy.selectedError!.truth.latitude,
+                            _accuracy.selectedError!.truth.longitude,
+                          ),
+                          color: _truthColor,
+                          radius: 5,
+                        ),
+                      CircleMarker(
+                        point:
+                            _points[visibleIndices[currentSliderPos]].location,
+                        color: Colors.transparent,
+                        borderStrokeWidth: 2,
+                        borderColor: Colors.yellow.shade700,
+                        radius: 7,
+                      ),
+                    ],
+                  ),
+              ],
+            ),
           ),
           if (widget.mobileLayout || _currentImuInfo == null)
             Positioned(top: 12, left: 12, right: 12, child: _positionSummary()),
@@ -2341,133 +2431,139 @@ class _MobilePositioningPageState extends State<MobilePositioningPage> {
               bottom: widget.mobileLayout ? 12 : 20,
               left: widget.mobileLayout ? 12 : 20,
               right: widget.mobileLayout ? 12 : 20,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.6),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (!compactTimeline) timelineSelector,
-                    Row(
-                      children: [
-                        if (compactTimeline) timelineSelector,
-                        Expanded(
-                          child: SliderTheme(
-                            data: SliderThemeData(
-                              trackHeight: 2.0,
-                              thumbShape: const RoundSliderThumbShape(
-                                enabledThumbRadius: 6.0,
+              child: DrawerSwipeBlocker(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.6),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (!compactTimeline) timelineSelector,
+                      Row(
+                        children: [
+                          if (compactTimeline) timelineSelector,
+                          Expanded(
+                            child: SliderTheme(
+                              data: SliderThemeData(
+                                trackHeight: 2.0,
+                                thumbShape: const RoundSliderThumbShape(
+                                  enabledThumbRadius: 6.0,
+                                ),
+                                overlayShape: const RoundSliderOverlayShape(
+                                  overlayRadius: 14.0,
+                                ),
                               ),
-                              overlayShape: const RoundSliderOverlayShape(
-                                overlayRadius: 14.0,
+                              child: Slider(
+                                value: currentSliderPos.toDouble(),
+                                min: 0,
+                                max: visibleIndices.isEmpty
+                                    ? 1.0
+                                    : (visibleIndices.length - 1).toDouble(),
+                                onChanged: visibleIndices.length <= 1
+                                    ? null
+                                    : (value) {
+                                        _updateToSelectedEpoch(
+                                          visibleIndices[value.toInt()],
+                                        );
+                                      },
                               ),
                             ),
-                            child: Slider(
-                              value: currentSliderPos.toDouble(),
-                              min: 0,
-                              max: visibleIndices.isEmpty
-                                  ? 1.0
-                                  : (visibleIndices.length - 1).toDouble(),
-                              onChanged: visibleIndices.length <= 1
-                                  ? null
-                                  : (value) {
-                                      _updateToSelectedEpoch(
-                                        visibleIndices[value.toInt()],
-                                      );
-                                    },
+                          ),
+                          IconButton(
+                            icon: const Icon(
+                              Icons.chevron_left,
+                              color: Colors.white,
+                              size: 20,
                             ),
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(
-                            Icons.chevron_left,
-                            color: Colors.white,
-                            size: 20,
-                          ),
-                          padding: EdgeInsets.zero,
-                          constraints: BoxConstraints(
-                            minWidth: widget.mobileLayout ? 48 : 28,
-                            minHeight: widget.mobileLayout ? 48 : 28,
-                          ),
-                          onPressed: () {
-                            if (visibleIndices.isEmpty) return;
-                            if (currentSliderPos > 0) {
-                              _updateToSelectedEpoch(
-                                visibleIndices[currentSliderPos - 1],
-                              );
-                            }
-                          },
-                          tooltip: '上一历元',
-                        ),
-                        Text(
-                          '${currentSliderPos + 1} / ${visibleIndices.length}',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(
-                            Icons.chevron_right,
-                            color: Colors.white,
-                            size: 20,
-                          ),
-                          padding: EdgeInsets.zero,
-                          constraints: BoxConstraints(
-                            minWidth: widget.mobileLayout ? 48 : 28,
-                            minHeight: widget.mobileLayout ? 48 : 28,
-                          ),
-                          onPressed: () {
-                            if (visibleIndices.isEmpty) return;
-                            if (currentSliderPos < visibleIndices.length - 1) {
-                              _updateToSelectedEpoch(
-                                visibleIndices[currentSliderPos + 1],
-                              );
-                            }
-                          },
-                          tooltip: '下一历元',
-                        ),
-                        IconButton(
-                          icon: const Icon(
-                            Icons.skip_next,
-                            color: Colors.white,
-                            size: 20,
-                          ),
-                          onPressed: () {
-                            setState(() {
-                              _selectedIndex = null;
-                              if (visibleIndices.isNotEmpty) {
-                                final point = _points[visibleIndices.last];
-                                if (point.isImu) {
-                                  _currentImuInfo = point.imuData;
-                                  _currentInfo = null;
-                                } else {
-                                  _currentInfo = point.posInfo;
-                                  _currentImuInfo = null;
-                                }
-                                if (_autoCenter) {
-                                  _mapController.move(
-                                    point.location,
-                                    _mapController.camera.zoom,
-                                  );
-                                }
+                            padding: EdgeInsets.zero,
+                            constraints: BoxConstraints(
+                              minWidth: widget.mobileLayout ? 48 : 28,
+                              minHeight: widget.mobileLayout ? 48 : 28,
+                            ),
+                            onPressed: () {
+                              if (visibleIndices.isEmpty) return;
+                              if (currentSliderPos > 0) {
+                                _updateToSelectedEpoch(
+                                  visibleIndices[currentSliderPos - 1],
+                                );
                               }
-                            });
-                            _selectAccuracyPoint(
-                              visibleIndices.isEmpty
-                                  ? null
-                                  : _points[visibleIndices.last],
-                            );
-                          },
-                          tooltip: '回到最新',
-                        ),
-                      ],
-                    ),
-                  ],
+                            },
+                            tooltip: '上一历元',
+                          ),
+                          Text(
+                            '${currentSliderPos + 1} / ${visibleIndices.length}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(
+                              Icons.chevron_right,
+                              color: Colors.white,
+                              size: 20,
+                            ),
+                            padding: EdgeInsets.zero,
+                            constraints: BoxConstraints(
+                              minWidth: widget.mobileLayout ? 48 : 28,
+                              minHeight: widget.mobileLayout ? 48 : 28,
+                            ),
+                            onPressed: () {
+                              if (visibleIndices.isEmpty) return;
+                              if (currentSliderPos <
+                                  visibleIndices.length - 1) {
+                                _updateToSelectedEpoch(
+                                  visibleIndices[currentSliderPos + 1],
+                                );
+                              }
+                            },
+                            tooltip: '下一历元',
+                          ),
+                          IconButton(
+                            icon: const Icon(
+                              Icons.skip_next,
+                              color: Colors.white,
+                              size: 20,
+                            ),
+                            onPressed: () {
+                              setState(() {
+                                _selectedIndex = null;
+                                if (visibleIndices.isNotEmpty) {
+                                  final point = _points[visibleIndices.last];
+                                  if (point.isImu) {
+                                    _currentImuInfo = point.imuData;
+                                    _currentInfo = null;
+                                  } else {
+                                    _currentInfo = point.posInfo;
+                                    _currentImuInfo = null;
+                                  }
+                                  if (_autoCenter) {
+                                    _mapController.move(
+                                      point.location,
+                                      _mapController.camera.zoom,
+                                    );
+                                  }
+                                }
+                              });
+                              _selectAccuracyPoint(
+                                visibleIndices.isEmpty
+                                    ? null
+                                    : _points[visibleIndices.last],
+                              );
+                            },
+                            tooltip: '回到最新',
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),

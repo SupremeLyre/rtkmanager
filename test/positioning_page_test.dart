@@ -19,6 +19,7 @@ import 'package:rtkmanager/gga_log_service.dart';
 import 'package:rtkmanager/gnss_ble_service.dart';
 import 'package:rtkmanager/positioning_page.dart';
 import 'package:rtkmanager/imu_data_parser.dart';
+import 'package:rtkmanager/imu_file_data.dart';
 import 'package:rtkmanager/mqtt_position_service.dart';
 import 'package:rtkmanager/mqtt_position_archive.dart';
 import 'package:rtkmanager/accuracy_controller.dart';
@@ -249,6 +250,122 @@ void main() {
       for (final type in ['gga', 'pppsol', 'imu']) {
         expect(find.byKey(ValueKey('layer-visible-$type')), findsOneWidget);
       }
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    }, createHttpClient: (_) => _TileHttpClient());
+  });
+
+  testWidgets('offline navigation keeps high-rate results without a position', (
+    tester,
+  ) async {
+    final navigation = File('${directory.path}/navigation.bin')
+      ..writeAsBytesSync([
+        for (var i = 0; i < 3; i++) ..._imuNavigationFrame(i * 100),
+      ]);
+    final second = File('${directory.path}/navigation-second.bin')
+      ..writeAsBytesSync(_imuNavigationFrame(400));
+    final files = ImuFileController();
+    addTearDown(files.dispose);
+    final broadcasts = <ImuData>[];
+    final subscription = ImuDataParser.imuDataStream.listen(broadcasts.add);
+    addTearDown(subscription.cancel);
+    var opened = 0;
+    await HttpOverrides.runZoned(() async {
+      await tester.binding.setSurfaceSize(const Size(1000, 760));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MobilePositioningPage(
+            visualization: files,
+            onShowVisualization: () => opened++,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await _importPositionFiles(tester, [navigation.path], 0);
+      expect(_mapPoints(tester), isEmpty);
+      expect(files.datasets, hasLength(1));
+      expect(files.selected!.sourcePath, navigation.path);
+      expect(files.selected!.frameCount, 3);
+      expect(files.selected!.series[ImuFileVector.attitude], hasLength(3));
+      expect(files.selected!.series[ImuFileVector.velocity], hasLength(3));
+      expect(broadcasts, isEmpty);
+
+      await tester.tap(find.byTooltip('数据来源'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('姿态与速度时序'));
+      await tester.pumpAndSettle();
+      expect(opened, 1);
+      expect(files.selectedPath, navigation.path);
+
+      await _importPositionFiles(tester, [navigation.path, second.path], 0);
+      expect(files.datasets, hasLength(2));
+      expect(
+        files.datasets
+            .singleWhere((data) => data.sourcePath == navigation.path)
+            .frameCount,
+        3,
+      );
+      expect(broadcasts, isEmpty);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    }, createHttpClient: (_) => _TileHttpClient());
+  });
+
+  testWidgets('positioning removes only its imported visualization sources', (
+    tester,
+  ) async {
+    final first = File(
+      '${directory.path}/navigation-a.bin',
+    )..writeAsBytesSync([..._imuPositionFrame(1), ..._imuNavigationFrame(100)]);
+    final second = File(
+      '${directory.path}/navigation-b.bin',
+    )..writeAsBytesSync([..._imuPositionFrame(2), ..._imuNavigationFrame(200)]);
+    final files = ImuFileController();
+    addTearDown(files.dispose);
+    final direct = ImuFileBuilder('direct-import.bin')..add(ImuData()..ax = 1);
+    files.add(direct.build());
+    var opened = 0;
+    await HttpOverrides.runZoned(() async {
+      await tester.binding.setSurfaceSize(const Size(1000, 760));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MobilePositioningPage(
+            visualization: files,
+            onShowVisualization: () => opened++,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await _importPositionFiles(tester, [first.path, second.path], 2);
+      expect(files.datasets, hasLength(3));
+      expect(files.selectedPath, second.path);
+      await tester.tap(find.byTooltip('数据来源'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('姿态与速度时序'));
+      await tester.pumpAndSettle();
+      expect(opened, 1);
+      expect(files.selectedPath, first.path);
+      await tester.tap(find.byTooltip('图层管理'));
+      await tester.pumpAndSettle();
+      final remove = find.byKey(ValueKey('layer-remove-file-${first.path}'));
+      await tester.ensureVisible(remove);
+      await tester.tap(remove);
+      await tester.pumpAndSettle();
+      expect(
+        files.datasets.map((data) => data.sourcePath),
+        unorderedEquals(['direct-import.bin', second.path]),
+      );
+      await tester.ensureVisible(find.byTooltip('关闭图层管理'));
+      await tester.tap(find.byTooltip('关闭图层管理'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('清除轨迹'));
+      await tester.pumpAndSettle();
+      expect(files.datasets.single.sourcePath, 'direct-import.bin');
+      expect(_mapPoints(tester), isEmpty);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();
@@ -582,8 +699,15 @@ void main() {
   testWidgets('failed file import preserves completed files and allows retry', (
     tester,
   ) async {
-    final second = File('${directory.path}/imu.bin')
-      ..writeAsBytesSync(_imuPositionFrame(1));
+    input.writeAsBytesSync([
+      ...input.readAsBytesSync(),
+      ..._imuNavigationFrame(100),
+    ]);
+    final second = File(
+      '${directory.path}/imu.bin',
+    )..writeAsBytesSync([..._imuPositionFrame(1), ..._imuNavigationFrame(200)]);
+    final files = ImuFileController();
+    addTearDown(files.dispose);
     var removeOnStart = true;
     await HttpOverrides.runZoned(() async {
       await tester.binding.setSurfaceSize(const Size(1000, 760));
@@ -592,6 +716,7 @@ void main() {
         MaterialApp(
           home: MobilePositioningPage(
             onOpenDrawer: () {},
+            visualization: files,
             onImportingChanged: (importing) {
               if (importing && removeOnStart) {
                 removeOnStart = false;
@@ -623,6 +748,8 @@ void main() {
 
       await importAndWait('文件导入失败');
       expect(_mapPoints(tester), hasLength(6));
+      expect(files.datasets.single.sourcePath, input.path);
+      expect(files.datasets.single.frameCount, 1);
       await tester.tap(find.byTooltip('图层管理'));
       await tester.pumpAndSettle();
       expect(find.text(input.path), findsOneWidget);
@@ -632,9 +759,14 @@ void main() {
       await tester.tap(find.byTooltip('关闭图层管理'));
       await tester.pumpAndSettle();
 
-      second.writeAsBytesSync(_imuPositionFrame(1));
+      second.writeAsBytesSync([
+        ..._imuPositionFrame(1),
+        ..._imuNavigationFrame(200),
+      ]);
       await importAndWait('文件解析完成，共载入 1 个轨迹点');
       expect(_mapPoints(tester), hasLength(7));
+      expect(files.datasets, hasLength(2));
+      expect(files.selectedPath, second.path);
       await tester.tap(find.byTooltip('图层管理'));
       await tester.pumpAndSettle();
       expect(find.text(input.path), findsOneWidget);
@@ -2002,6 +2134,48 @@ List<int> _imuPositionFrame(int second) {
     0x45,
   ];
   final bytes = [0x59, 0x53, second, 0, payload.length, ...payload];
+  var ck1 = 0, ck2 = 0;
+  for (final byte in bytes.skip(2)) {
+    ck1 = (ck1 + byte) & 255;
+    ck2 = (ck2 + ck1) & 255;
+  }
+  return [...bytes, ck1, ck2];
+}
+
+List<int> _imuNavigationFrame(int millisecond) {
+  final utc = ByteData(11)
+    ..setUint32(0, millisecond, Endian.little)
+    ..setUint16(4, 26, Endian.little)
+    ..setUint8(6, 9)
+    ..setUint8(7, 24)
+    ..setUint8(8, 12)
+    ..setUint8(10, 1);
+  final attitude = ByteData(12)
+    ..setInt32(0, 1000000 + millisecond, Endian.little)
+    ..setInt32(4, 2000000 + millisecond, Endian.little)
+    ..setInt32(8, 3000000 + millisecond, Endian.little);
+  final velocity = ByteData(12)
+    ..setInt32(0, 1000 + millisecond, Endian.little)
+    ..setInt32(4, 2000 + millisecond, Endian.little)
+    ..setInt32(8, 3000 + millisecond, Endian.little);
+  final payload = [
+    0x50,
+    11,
+    ...utc.buffer.asUint8List(),
+    0x40,
+    12,
+    ...attitude.buffer.asUint8List(),
+    0x70,
+    12,
+    ...velocity.buffer.asUint8List(),
+    0x80,
+    1,
+    0x44,
+    0x85,
+    1,
+    3,
+  ];
+  final bytes = [0x59, 0x53, millisecond & 255, 0, payload.length, ...payload];
   var ck1 = 0, ck2 = 0;
   for (final byte in bytes.skip(2)) {
     ck1 = (ck1 + byte) & 255;

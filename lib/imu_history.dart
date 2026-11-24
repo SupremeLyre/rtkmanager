@@ -51,6 +51,16 @@ class ImuHistory {
   }
 
   void add(ImuData data, {required int arrivalUs, required DateTime now}) {
+    final hasGps =
+        data.gpsWeek != null &&
+        data.gpsWeek! >= 0 &&
+        data.gpsWeek! <= 65535 &&
+        data.gpsTowNanos != null &&
+        data.gpsTowNanos! >= 0 &&
+        data.gpsTowNanos! < 604800000000000;
+    // Do not plot the firmware's placeholder UTC before synchronization.
+    if (!hasGps && data.utcYear != null && data.utcYear! <= 2000) return;
+
     final vectors = {
       ImuVector.acceleration: [data.ax, data.ay, data.az],
       ImuVector.gyroscope: [data.wx, data.wy, data.wz],
@@ -61,7 +71,7 @@ class ImuHistory {
     }
     var time = arrivalUs;
     var basis = '接收时间';
-    if (data.gpsWeek != null && data.gpsTowNanos != null) {
+    if (hasGps) {
       time = data.gpsWeek! * 604800000000 + data.gpsTowNanos! ~/ 1000;
       basis = 'GPS 采样时间';
     } else if ([

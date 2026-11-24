@@ -123,7 +123,7 @@ class _PhoneCapturePageState extends State<PhoneCapturePage> {
                     key: const ValueKey('capture-open-imu'),
                     onPressed: widget.onShowImu,
                     icon: const Icon(Icons.show_chart),
-                    label: const Text('IMU 实时曲线'),
+                    label: const Text('数据可视化'),
                   ),
               ],
             ),

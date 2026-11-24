@@ -421,14 +421,16 @@ class _AccuracyPageState extends State<AccuracyPage> {
         const SizedBox(width: 6),
         Tooltip(
           message: '显示扣除固定系统差后的误差；未标定分量保留原始值',
-          child: Switch.adaptive(
-            key: const ValueKey('accuracy-corrected-toggle'),
-            value: _displayCorrected,
-            onChanged:
-                !widget.controller.options.calibrate ||
-                    !layer.calibration.applied
-                ? null
-                : (value) => setState(() => _corrected = value),
+          child: DrawerSwipeBlocker(
+            child: Switch.adaptive(
+              key: const ValueKey('accuracy-corrected-toggle'),
+              value: _displayCorrected,
+              onChanged:
+                  !widget.controller.options.calibrate ||
+                      !layer.calibration.applied
+                  ? null
+                  : (value) => setState(() => _corrected = value),
+            ),
           ),
         ),
       ],
@@ -692,15 +694,18 @@ class _AccuracyPageState extends State<AccuracyPage> {
             );
           },
         ),
-        Slider(
-          key: const ValueKey('accuracy-epoch-slider'),
-          value: index.toDouble(),
-          min: 0,
-          max: records.length > 1 ? (records.length - 1).toDouble() : 1,
-          label: accuracyUtcLabel(selected.utcTime),
-          onChanged: records.length < 2
-              ? null
-              : (value) => controller.selectPoint(records[value.round()].point),
+        DrawerSwipeBlocker(
+          child: Slider(
+            key: const ValueKey('accuracy-epoch-slider'),
+            value: index.toDouble(),
+            min: 0,
+            max: records.length > 1 ? (records.length - 1).toDouble() : 1,
+            label: accuracyUtcLabel(selected.utcTime),
+            onChanged: records.length < 2
+                ? null
+                : (value) =>
+                      controller.selectPoint(records[value.round()].point),
+          ),
         ),
         Wrap(
           alignment: WrapAlignment.spaceBetween,
